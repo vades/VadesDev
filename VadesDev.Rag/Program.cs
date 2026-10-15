@@ -4,14 +4,24 @@ using VadesDev.Rag.Configuration;
 using VadesDev.Rag.Embeddings;
 using VadesDev.Rag.Knowledge;
 using VadesDev.Rag.Models;
+using VadesDev.Rag.Prompting;
+using VadesDev.Rag.Search;
 
-var embedder = new HashingEmbeddingGenerator();
+
+
+var chunk = new DocumentChunk("faq-2", "support.md", "Customer support hours are Monday through Friday.");
+var hits = new List<SearchHit> { new(chunk, 0.5f) };
+
+var prompt = new GroundedPromptBuilder().Build("What are your support hours?", hits);
+Console.WriteLine(prompt);
+
+/*var embedder = new HashingEmbeddingGenerator();
 var vector = await embedder.GenerateVectorAsync("What are your support hours?");
 Console.WriteLine(vector.Length);
 Console.WriteLine(TensorPrimitives.Norm(vector.Span));
 
 var empty = await embedder.GenerateVectorAsync("What is the?");
-Console.WriteLine(TensorPrimitives.Norm(empty.Span));
+Console.WriteLine(TensorPrimitives.Norm(empty.Span));*/
 
 /*Console.WriteLine(Fnv1AHasher.Hash(""));
 Console.WriteLine(Fnv1AHasher.Hash("a"));*/
