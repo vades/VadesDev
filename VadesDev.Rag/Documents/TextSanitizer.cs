@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace VadesDev.Rag.Documents;
 
 /// <summary>
-/// Cleans a text before chunking: removes links, control characters and repeated spaces.
+/// Cleans a text before indexing: removes links, Markdown symbols, control characters and repeated spaces.
 /// </summary>
 public static partial class TextSanitizer
 {
@@ -13,7 +13,8 @@ public static partial class TextSanitizer
     public static string Sanitize(string text)
     {
         var withoutLinks = RemoveLinks(text);
-        var withoutDangerousCharacters = RemoveDangerousCharacters(withoutLinks);
+        var withoutSymbols = RemoveMarkdownSymbols(withoutLinks);
+        var withoutDangerousCharacters = RemoveDangerousCharacters(withoutSymbols);
 
         return CollapseWhitespace(withoutDangerousCharacters);
     }
@@ -26,6 +27,16 @@ public static partial class TextSanitizer
         var withoutMarkdownLinks = MarkdownLinkRegex().Replace(text, "$1");
 
         return RawUrlRegex().Replace(withoutMarkdownLinks, "");
+    }
+
+    /// <summary>
+    /// Removes Markdown symbols but keeps the words: heading markers (#), bold/italic markers (** and __) and backticks.
+    /// </summary>
+    private static string RemoveMarkdownSymbols(string text)
+    {
+        var withoutHeadingMarkers = HeadingMarkerRegex().Replace(text, "");
+
+        return EmphasisMarkerRegex().Replace(withoutHeadingMarkers, "");
     }
 
     /// <summary>
@@ -55,6 +66,12 @@ public static partial class TextSanitizer
 
     [GeneratedRegex(@"https?://\S+")]
     private static partial Regex RawUrlRegex();
+
+    [GeneratedRegex(@"^#{1,6}[^\S\r\n]*", RegexOptions.Multiline)]
+    private static partial Regex HeadingMarkerRegex();
+
+    [GeneratedRegex(@"\*\*|__|`")]
+    private static partial Regex EmphasisMarkerRegex();
 
     [GeneratedRegex(@"[^\S\r\n]+")]
     private static partial Regex RepeatedSpacesRegex();
