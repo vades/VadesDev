@@ -6,3 +6,4 @@ riderModule.iml
 .idea/
 _project/
 *.DotSettings.user
+appsettings.Local.json

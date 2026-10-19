@@ -1,16 +1,34 @@
 ﻿using System.ClientModel;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using OpenAI;
 using VadesDev.Rag.Agents;
+using VadesDev.Rag.Configuration;
 
-var apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
-             ?? throw new InvalidOperationException("Set the GEMINI_API_KEY environment variable.");
+var configuration = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json")
+    .AddJsonFile("appsettings.Local.json", optional: true)
+    .AddEnvironmentVariables()
+    .Build();
+
+var settings = configuration.GetSection("Gemini").Get<GeminiSettings>()
+               ?? throw new InvalidOperationException("Section 'Gemini' is missing in appsettings.json.");
+
+var apiKey = configuration["Gemini:ApiKey"];
+
+if (string.IsNullOrWhiteSpace(apiKey))
+{
+    throw new InvalidOperationException("Set Gemini:ApiKey in appsettings.Local.json or the Gemini__ApiKey environment variable.");
+}
+
+Console.WriteLine(settings);
 
 var client = new OpenAIClient(
     new ApiKeyCredential(apiKey),
-    new OpenAIClientOptions { Endpoint = new Uri("https://generativelanguage.googleapis.com/v1beta/openai/") });
+    new OpenAIClientOptions { Endpoint = new Uri(settings.Endpoint) });
 
-IChatClient chatClient = client.GetChatClient("gemini-2.5-flash").AsIChatClient();
+IChatClient chatClient = client.GetChatClient(settings.ChatModel).AsIChatClient();
 var agent = new RagAgentFactory().Create(chatClient);
 
 var context = "Context:\n[1] Customer support hours are Monday through Friday, 9 AM to 5 PM CET. (source: support.md)\n\n";
