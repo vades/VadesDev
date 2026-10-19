@@ -1,9 +1,11 @@
-﻿using System.ClientModel;
-using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
-using OpenAI;
+﻿using Microsoft.Extensions.Configuration;
 using VadesDev.Rag.Agents;
+using VadesDev.Rag.Cli;
 using VadesDev.Rag.Configuration;
+using VadesDev.Rag.Documents;
+using VadesDev.Rag.Prompting;
+using VadesDev.Rag.Providers;
+using VadesDev.Rag.Search;
 
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -15,26 +17,21 @@ var configuration = new ConfigurationBuilder()
 var settings = configuration.GetSection("Gemini").Get<GeminiSettings>()
                ?? throw new InvalidOperationException("Section 'Gemini' is missing in appsettings.json.");
 
-var apiKey = configuration["Gemini:ApiKey"];
+var factory = new GeminiClientFactory(settings, configuration["Gemini:ApiKey"] ?? "");
+var embedder = factory.CreateEmbeddingGenerator();
 
-if (string.IsNullOrWhiteSpace(apiKey))
-{
-    throw new InvalidOperationException("Set Gemini:ApiKey in appsettings.Local.json or the Gemini__ApiKey environment variable.");
-}
+var path = Path.Combine(AppContext.BaseDirectory, "Data", "knowledge.md");
+var document = await new MarkdownFileReader().ReadAsync(path);
+var chunks = DocumentChunker.Chunk(document)
+    .Select(c => c with { Text = TextSanitizer.Sanitize(c.Text) })
+    .ToArray();
 
-Console.WriteLine(settings);
+Console.WriteLine("Indexing...");
+var index = await new ChunkIndexer(embedder).BuildIndexAsync(chunks);
+Console.WriteLine($"Indexed {index.Count} chunks ({index[0].Vector.Length} dimensions).\n");
 
-var client = new OpenAIClient(
-    new ApiKeyCredential(apiKey),
-    new OpenAIClientOptions { Endpoint = new Uri(settings.Endpoint) });
+var retriever = new ChunkRetriever(index, new RagSettings());
+var agent = new RagAgentFactory().Create(factory.CreateChatClient());
+var pipeline = new RagPipeline(embedder, retriever, new GroundedPromptBuilder(), agent);
 
-IChatClient chatClient = client.GetChatClient(settings.ChatModel).AsIChatClient();
-var agent = new RagAgentFactory().Create(chatClient);
-
-var context = "Context:\n[1] Customer support hours are Monday through Friday, 9 AM to 5 PM CET. (source: support.md)\n\n";
-
-foreach (var question in new[] { "What are your support hours?", "Do you sell pizza?" })
-{
-    var response = await agent.RunAsync($"{context}Question: {question}");
-    Console.WriteLine($"? {question}\n  {response.Text}\n");
-}
+await new ConsoleRunner(pipeline).RunAsync();

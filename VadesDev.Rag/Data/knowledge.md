@@ -10,3 +10,11 @@ See [our help page](https://example.com/help) for more.
 # Shipping
 
 Standard shipping takes 3 to 5 business days within the EU.
+
+# Account
+
+To reset your password click 'Forgot Password' on the login screen and check your email inbox.
+
+# Security
+
+We support two-factor authentication using an authenticator app.
