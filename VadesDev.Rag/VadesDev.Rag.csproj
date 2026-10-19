@@ -9,7 +9,8 @@
 
     <ItemGroup>
       <PackageReference Include="Microsoft.Agents.AI" Version="1.24.0" />
-      <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.10.1" />
+      <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.11.0" />
+      <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0" />
       <PackageReference Include="System.Numerics.Tensors" Version="10.0.12" />
     </ItemGroup>
 

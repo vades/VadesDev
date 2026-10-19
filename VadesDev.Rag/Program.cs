@@ -1,29 +1,22 @@
-﻿using VadesDev.Rag.Agents;
-using VadesDev.Rag.Chat;
-using VadesDev.Rag.Cli;
-using VadesDev.Rag.Configuration;
-using VadesDev.Rag.Documents;
-using VadesDev.Rag.Embeddings;
-using VadesDev.Rag.Prompting;
-using VadesDev.Rag.Search;
+﻿using System.ClientModel;
+using Microsoft.Extensions.AI;
+using OpenAI;
+using VadesDev.Rag.Agents;
 
-// Fakes behind the real Microsoft.Extensions.AI types. Phase 4 swaps only these two lines.
-var embedder = new HashingEmbeddingGenerator();
-var chatClient = new FakeExtractiveChatClient();
+var apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
+             ?? throw new InvalidOperationException("Set the GEMINI_API_KEY environment variable.");
 
-// Phase 3: read the Markdown file, chunk it, then sanitize each chunk.
-var path = Path.Combine(AppContext.BaseDirectory, "Data", "knowledge.md");
-var document = await new MarkdownFileReader().ReadAsync(path);
-var chunks = DocumentChunker.Chunk(document)
-    .Select(c => c with { Text = TextSanitizer.Sanitize(c.Text) })
-    .ToArray();
+var client = new OpenAIClient(
+    new ApiKeyCredential(apiKey),
+    new OpenAIClientOptions { Endpoint = new Uri("https://generativelanguage.googleapis.com/v1beta/openai/") });
 
-Console.WriteLine("Indexing...");
-var index = await new ChunkIndexer(embedder).BuildIndexAsync(chunks);
-Console.WriteLine($"Indexed {index.Count} chunks ({index[0].Vector.Length} dimensions).\n");
-
-var retriever = new ChunkRetriever(index, new RagSettings());
+IChatClient chatClient = client.GetChatClient("gemini-2.5-flash").AsIChatClient();
 var agent = new RagAgentFactory().Create(chatClient);
-var pipeline = new RagPipeline(embedder, retriever, new GroundedPromptBuilder(), agent);
 
-await new ConsoleRunner(pipeline).RunAsync();
+var context = "Context:\n[1] Customer support hours are Monday through Friday, 9 AM to 5 PM CET. (source: support.md)\n\n";
+
+foreach (var question in new[] { "What are your support hours?", "Do you sell pizza?" })
+{
+    var response = await agent.RunAsync($"{context}Question: {question}");
+    Console.WriteLine($"? {question}\n  {response.Text}\n");
+}
