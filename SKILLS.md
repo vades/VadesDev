@@ -2,7 +2,7 @@
 
 Instructions for coding agents that build **RAG (retrieval-augmented generation)** and **agentic** applications with **.NET**.
 
-The skills describe general best practices. The last section, **Project overrides**, lists where `VadesDev.Rag` deliberately differs because it is a learning project. **Overrides win over the skills.**
+The skills describe general best practices and can be reused in other projects. Project-specific rules live in a separate file: **`SKILLS_RAG.md`** (for `VadesDev.Rag`). If a project file exists, read it too. **On conflicts, the project file wins.**
 
 ## How to use this file
 
@@ -94,11 +94,11 @@ Keep each stage in its own class and folder. Do not mix reading, cleaning, chunk
 
 - Return a small, ordered list: the best `TopK` chunks whose score is at least `MinScore`.
 - **`MinScore` is specific to the embedding model.** Never copy a threshold from another model. Calibrate it:
-    1. Use the real embedder, and a fake or cheap chat client.
-    2. Turn the threshold off (`0`) and print all scores.
-    3. Ask questions the knowledge base can answer (include paraphrases with no shared keywords) and questions it cannot.
-    4. Choose the threshold in the gap between the weakest correct top-1 and the strongest false top-1, closer to the false side.
-    5. Re-check when the content grows or the model changes.
+  1. Use the real embedder, and a fake or cheap chat client.
+  2. Turn the threshold off (`0`) and print all scores.
+  3. Ask questions the knowledge base can answer (include paraphrases with no shared keywords) and questions it cannot.
+  4. Choose the threshold in the gap between the weakest correct top-1 and the strongest false top-1, closer to the false side.
+  5. Re-check when the content grows or the model changes.
 - Short queries (one or two words) retrieve less reliably. Consider rewriting them into full questions later.
 - Later improvements, only when needed: hybrid search (keyword plus vector), reranking, query rewriting, metadata filters.
 - Keep the retrieval contract stable when you change storage: question vector in, ordered hits with scores out.
@@ -255,83 +255,3 @@ IEmbeddingGenerator<string, Embedding<float>> embedder = client.GetEmbeddingClie
 5. Secrets are not in code, logs or commits.
 6. Anything you could not verify is marked as unverified.
 7. Docs (`README.md`, `DEVELOPER_GUIDE.md`) are updated if setup, classes or commands changed.
-
----
-
-# Project overrides: VadesDev.Rag
-
-`VadesDev.Rag` is a **learning project**. These rules override the skills above where they differ.
-
-## Precedence
-
-Constraints > Instructions (workflow) > Project overrides (this section) > Skills.
-
-## Constraints
-
-- Best practices, but simple. Keep it simple.
-- Single responsibility per class and per method.
-- Methods between 20 and 30 lines (shorter is fine).
-- **No interfaces of our own.** The framework interfaces (`IChatClient`, `IEmbeddingGenerator`) may be used and implemented. (The skills above would normally add interfaces for testability and dependency injection. Here we use concrete classes and the fakes.)
-- No repository pattern, also not with Entity Framework or pgvector.
-- No over-engineering: no extra projects, layers or settings before a phase needs them.
-- No secrets in code.
-
-## Workflow: one class at a time
-
-For every class, never skip a step:
-
-1. Propose the **structure** only: class, fields, constructor, method signatures, placeholder bodies and XML summaries. Explain it briefly (responsibility and notes).
-2. Wait for approval.
-3. Write the **method bodies** one by one, then the full file for copy and paste.
-4. Give a **test snippet** with the expected output.
-5. Wait for "works" or "approved" before starting the next class.
-
-Rules for the steps:
-
-- One class per step. Do not describe several classes at once.
-- Order: folder structure, class structure, bodies, test, next class.
-- Declarations that are already final (records, constants, regex attributes, constructors) are shown in the structure step and marked as final. Records and methods without logic (`GetService`, `Dispose`) skip the placeholder stage.
-- Placeholder values: string `""`, collection `[]`, bool `false`, number `0`, `Task.CompletedTask`, object `null!`. Avoid compiler warnings in placeholders, or mention them.
-- Explain **why** briefly for each design decision, and flag every intentional behavior change.
-- End each step with one approval question and the name of the next class.
-- After each phase, give a short summary: new files, flow, decisions, known limits, next phase.
-
-## Structure and style
-
-- Solution `VadesDev`, project `VadesDev.Rag` (project folder directly under the solution, no `src/` folder). Namespaces start with `VadesDev.Rag.<Folder>`.
-- Folder = pipeline stage (`Models`, `Configuration`, `Documents`, `Embeddings`, `Search`, `Prompting`, `Chat`, `Agents`, `Providers`, `Cli`). One type per file. No `Services`, `Helpers` or `Utils` folders.
-- `Program.cs` is wiring only.
-- Classes are `public`. Stateless classes are `static`. Framework implementations are `sealed`.
-- **Every class and method has an XML `<summary>`** (user decision, for tooltips).
-- Use `""` instead of `string.Empty`.
-- Only `CancellationToken`-free signatures in the console app (Ctrl+C ends the process). Add tokens in Phase 7, where HTTP requests can be cancelled.
-
-## Project-specific design rules
-
-- Pipeline order: read, chunk, sanitize each chunk, embed, index, search, prompt, agent.
-- `MinScore` lives in each provider's settings. `RagSettings.MinScore` has no default.
-- One client factory per provider (`CreateChatClient`, `CreateEmbeddingGenerator`), one settings record per provider, and `AiProviderFactory` selects by `Rag:Provider`.
-- `ChunkIndexer` returns the index list and `Program.cs` passes it to `ChunkRetriever`. There is no hidden shared state. In Phase 5 only these two classes change, and `Search(queryVector)` keeps its signature.
-- The prompt numbering stays `[1]`, `[2]`, ... because the fake chat client reads `[1]`.
-- The fakes stay in the project as offline test doubles.
-- Use `dotnet run`, not `dotnet watch`.
-
-## Phases
-
-1. Done: simple one-file app with dummy data
-2. Done: split into folders, classes, methods
-3. Done: read Markdown (reader, chunker, sanitizer)
-4. Done: real LLM chat and embeddings (Ollama, Gemini)
-5. Planned: PostgreSQL and pgvector
-6. Planned: RAG MVP as a CLI
-7. Planned: REST API with FastEndpoints (`RagPipeline.AskAsync` should return the answer and hits instead of printing)
-
-## Open items
-
-- Handle a startup failure (AI server not running during indexing) with a clear message (Phase 6).
-- The chunker has no size limit or overlap.
-- The sanitizer does not defend against prompt injection. Bullet markers and tables are not handled.
-- Only one hard-coded knowledge file. Folder support comes in Phase 6.
-- OllamaSharp's exception type for a wrong model name is not verified yet.
-- `Knowledge/DummyKnowledgeBase` is unused and can be deleted.
-- `DataIngestion` libraries from Microsoft may replace the own reader and chunker later. Check their state in Phase 6.
