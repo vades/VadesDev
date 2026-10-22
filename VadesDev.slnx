@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="VadesDev.Agent/VadesDev.Agent.csproj" />
+  <Project Path="VadesDev.Api/VadesDev.Api.csproj" />
+  <Project Path="VadesDev.Playground/VadesDev.Playground.csproj" />
+  <Project Path="VadesDev.Rag/VadesDev.Rag.csproj" />
+  <Project Path="VadesDev.Shared/VadesDev.Shared.csproj" />
+</Solution>
