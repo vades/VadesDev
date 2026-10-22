@@ -1,6 +1,7 @@
 namespace VadesDev.Rag.Configuration;
 
 /// <summary>
-/// Search settings: how many chunks to keep (TopK) and the minimum similarity score to accept one (MinScore).
+/// Search settings: the minimum similarity score to accept a chunk (MinScore, depends on the embedding model)
+/// and how many chunks to keep (TopK).
 /// </summary>
-public record RagSettings(int TopK = 2, float MinScore = 0.20f);
+public record RagSettings(float MinScore, int TopK = 2);

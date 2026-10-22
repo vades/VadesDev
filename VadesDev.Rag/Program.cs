@@ -1,15 +1,15 @@
 ﻿using VadesDev.Rag.Agents;
-using VadesDev.Rag.Chat;
 using VadesDev.Rag.Cli;
 using VadesDev.Rag.Configuration;
 using VadesDev.Rag.Documents;
-using VadesDev.Rag.Embeddings;
 using VadesDev.Rag.Prompting;
+using VadesDev.Rag.Providers;
 using VadesDev.Rag.Search;
 
-// Fakes behind the real Microsoft.Extensions.AI types. Phase 4 swaps only these two lines.
-var embedder = new HashingEmbeddingGenerator();
-var chatClient = new FakeExtractiveChatClient();
+// Phase 4: the provider (Gemini or Ollama) is chosen in appsettings.json (Rag:Provider).
+var configuration = AppConfiguration.Build();
+var provider = new AiProviderFactory(configuration).Create();
+Console.WriteLine($"Provider: {provider.Name} (MinScore {provider.MinScore})");
 
 // Phase 3: read the Markdown file, chunk it, then sanitize each chunk.
 var path = Path.Combine(AppContext.BaseDirectory, "Data", "knowledge.md");
@@ -19,11 +19,11 @@ var chunks = DocumentChunker.Chunk(document)
     .ToArray();
 
 Console.WriteLine("Indexing...");
-var index = await new ChunkIndexer(embedder).BuildIndexAsync(chunks);
+var index = await new ChunkIndexer(provider.EmbeddingGenerator).BuildIndexAsync(chunks);
 Console.WriteLine($"Indexed {index.Count} chunks ({index[0].Vector.Length} dimensions).\n");
 
-var retriever = new ChunkRetriever(index, new RagSettings());
-var agent = new RagAgentFactory().Create(chatClient);
-var pipeline = new RagPipeline(embedder, retriever, new GroundedPromptBuilder(), agent);
+var retriever = new ChunkRetriever(index, new RagSettings(provider.MinScore));
+var agent = new RagAgentFactory().Create(provider.ChatClient);
+var pipeline = new RagPipeline(provider.EmbeddingGenerator, retriever, new GroundedPromptBuilder(), agent);
 
 await new ConsoleRunner(pipeline).RunAsync();

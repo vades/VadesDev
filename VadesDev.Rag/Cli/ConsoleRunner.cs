@@ -35,7 +35,7 @@ public class ConsoleRunner
     {
         foreach (var question in DemoQuestions)
         {
-            await _pipeline.AskAsync(question);
+            await TryAskAsync(question);
         }
     }
 
@@ -48,7 +48,22 @@ public class ConsoleRunner
 
         while (Console.ReadLine() is { Length: > 0 } input)
         {
-            await _pipeline.AskAsync(input);
+            await TryAskAsync(input);
+        }
+    }
+
+    /// <summary>
+    /// Asks one question and prints a short message if the AI provider fails, instead of ending the program.
+    /// </summary>
+    private async Task TryAskAsync(string question)
+    {
+        try
+        {
+            await _pipeline.AskAsync(question);
+        }
+        catch (Exception exception) when (ProviderErrors.IsProviderError(exception))
+        {
+            Console.WriteLine($"  ! {ProviderErrors.Describe(exception)}");
         }
     }
 }
