@@ -1,5 +1,3 @@
-using System.ClientModel;
-
 namespace VadesDev.Rag.Cli;
 
 /// <summary>
@@ -55,7 +53,7 @@ public class ConsoleRunner
     }
 
     /// <summary>
-    /// Asks one question and prints a short message if the LLM request fails, instead of ending the program.
+    /// Asks one question and prints a short message if the AI provider fails, instead of ending the program.
     /// </summary>
     private async Task TryAskAsync(string question)
     {
@@ -63,19 +61,9 @@ public class ConsoleRunner
         {
             await _pipeline.AskAsync(question);
         }
-        catch (ClientResultException exception)
+        catch (Exception exception) when (ProviderErrors.IsProviderError(exception))
         {
-            Console.WriteLine($"  ! {GetErrorMessage(exception)}");
+            Console.WriteLine($"  ! {ProviderErrors.Describe(exception)}");
         }
-    }
-
-    /// <summary>
-    /// Turns an HTTP error from the LLM into one short, readable line.
-    /// </summary>
-    private static string GetErrorMessage(ClientResultException exception)
-    {
-        return exception.Status == 429
-            ? "LLM request failed: rate limit or daily quota reached (HTTP 429). Try again later."
-            : $"LLM request failed (HTTP {exception.Status}). Check the API key, model name, endpoint and network.";
     }
 }
