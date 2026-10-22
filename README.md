@@ -1,5 +1,3 @@
-# VadesDev
-
 # VadesDev.Rag
 
 A learning project: build a **RAG (retrieval-augmented generation)** application step by step with **.NET 10**, **C# 14** and the **Microsoft Agent Framework (MAF)**.
@@ -199,3 +197,4 @@ Values are read in layers, and later layers win: `appsettings.json`, then `appse
 
 - [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md): how the classes work, how to test and extend the project.
 - [SKILLS.md](SKILLS.md): best practices for coding agents that build RAG and agent apps with .NET.
+- [SKILLS_RAG.md](SKILLS_RAG.md): project-specific rules, decisions and workflow for coding agents working on this repository.
