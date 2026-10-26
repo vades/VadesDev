@@ -1,29 +1,69 @@
-﻿using VadesDev.Rag.Agents;
-using VadesDev.Rag.Cli;
+﻿using Microsoft.Extensions.Configuration;
+using Npgsql;
+using Pgvector;
+using Pgvector.Npgsql;
 using VadesDev.Rag.Configuration;
-using VadesDev.Rag.Documents;
-using VadesDev.Rag.Prompting;
-using VadesDev.Rag.Providers;
-using VadesDev.Rag.Search;
 
-// Phase 4: the provider (Gemini or Ollama) is chosen in appsettings.json (Rag:Provider).
 var configuration = AppConfiguration.Build();
-var provider = new AiProviderFactory(configuration).Create();
-Console.WriteLine($"Provider: {provider.Name} (MinScore {provider.MinScore})");
+var connectionString = configuration.GetConnectionString("Rag")
+    ?? throw new InvalidOperationException("Set ConnectionStrings:Rag in appsettings.Local.json.");
 
-// Phase 3: read the Markdown file, chunk it, then sanitize each chunk.
-var path = Path.Combine(AppContext.BaseDirectory, "Data", "knowledge.md");
-var document = await new MarkdownFileReader().ReadAsync(path);
-var chunks = DocumentChunker.Chunk(document)
-    .Select(c => c with { Text = TextSanitizer.Sanitize(c.Text) })
-    .ToArray();
+var builder = new NpgsqlDataSourceBuilder(connectionString);
+builder.UseVector();
+await using var dataSource = builder.Build();
 
-Console.WriteLine("Indexing...");
-var index = await new ChunkIndexer(provider.EmbeddingGenerator).BuildIndexAsync(chunks);
-Console.WriteLine($"Indexed {index.Count} chunks ({index[0].Vector.Length} dimensions).\n");
+// A column without a fixed size: can it hold vectors of different dimensions?
+await RunAsync("DROP TABLE IF EXISTS rag.smoke_test");
+await RunAsync("CREATE TABLE rag.smoke_test (id int PRIMARY KEY, embedding vector)");
+await RunAsync("INSERT INTO rag.smoke_test VALUES (1, $1)", new Vector(new float[] { 1, 2, 3 }));
+await RunAsync("INSERT INTO rag.smoke_test VALUES (2, $1)", new Vector(new float[] { 3, 2, 1 }));
+await RunAsync("INSERT INTO rag.smoke_test VALUES (3, $1)", new Vector(new float[] { 1, 2, 3, 4, 5 }));
 
-var retriever = new ChunkRetriever(index, new RagSettings(provider.MinScore));
-var agent = new RagAgentFactory().Create(provider.ChatClient);
-var pipeline = new RagPipeline(provider.EmbeddingGenerator, retriever, new GroundedPromptBuilder(), agent);
+// Read a vector back
+await using (var read = dataSource.CreateCommand("SELECT embedding FROM rag.smoke_test WHERE id = 1"))
+{
+    var stored = (Vector)(await read.ExecuteScalarAsync())!;
+    Console.WriteLine(string.Join(", ", stored.ToArray()));
+}
 
-await new ConsoleRunner(pipeline).RunAsync();
+// Search with a filter on the dimension: similarity = 1 - cosine distance
+await using (var search = dataSource.CreateCommand(
+    "SELECT id, 1 - (embedding <=> $1) AS similarity FROM rag.smoke_test " +
+    "WHERE vector_dims(embedding) = 3 ORDER BY embedding <=> $1"))
+{
+    search.Parameters.AddWithValue(new Vector(new float[] { 1, 2, 3 }));
+    await using var reader = await search.ExecuteReaderAsync();
+
+    while (await reader.ReadAsync())
+    {
+        Console.WriteLine($"id={reader.GetInt32(0)} similarity={reader.GetDouble(1):F4}");
+    }
+}
+
+// The same search without the filter: rows with another dimension must cause an error
+try
+{
+    await using var unfiltered = dataSource.CreateCommand("SELECT id, embedding <=> $1 FROM rag.smoke_test");
+    unfiltered.Parameters.AddWithValue(new Vector(new float[] { 1, 2, 3 }));
+    await using var reader = await unfiltered.ExecuteReaderAsync();
+
+    while (await reader.ReadAsync()) { }
+}
+catch (PostgresException exception)
+{
+    Console.WriteLine($"Without the filter: {exception.MessageText}");
+}
+
+await RunAsync("DROP TABLE rag.smoke_test");
+
+async Task RunAsync(string sql, params object[] values)
+{
+    await using var command = dataSource.CreateCommand(sql);
+
+    foreach (var value in values)
+    {
+        command.Parameters.AddWithValue(value);
+    }
+
+    await command.ExecuteNonQueryAsync();
+}
