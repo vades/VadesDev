@@ -4,7 +4,7 @@ using VadesDev.Rag.Configuration;
 namespace VadesDev.Rag.Providers;
 
 /// <summary>
-/// Builds the AI provider selected in the configuration (Rag:Provider): chat client, embedder and MinScore.
+/// Builds the AI provider selected in the configuration (Rag:Provider): chat client, embedder, model name and MinScore.
 /// </summary>
 public class AiProviderFactory
 {
@@ -38,7 +38,12 @@ public class AiProviderFactory
         var settings = AppConfiguration.GetRequired<GeminiSettings>(_configuration, "Gemini");
         var factory = new GeminiClientFactory(settings, _configuration["Gemini:ApiKey"] ?? "");
 
-        return new AiProvider("Gemini", factory.CreateChatClient(), factory.CreateEmbeddingGenerator(), settings.MinScore);
+        return new AiProvider(
+            "Gemini",
+            factory.CreateChatClient(),
+            factory.CreateEmbeddingGenerator(),
+            settings.EmbeddingModel,
+            settings.MinScore);
     }
 
     /// <summary>
@@ -49,6 +54,11 @@ public class AiProviderFactory
         var settings = AppConfiguration.GetRequired<OllamaSettings>(_configuration, "Ollama");
         var factory = new OllamaClientFactory(settings);
 
-        return new AiProvider("Ollama", factory.CreateChatClient(), factory.CreateEmbeddingGenerator(), settings.MinScore);
+        return new AiProvider(
+            "Ollama",
+            factory.CreateChatClient(),
+            factory.CreateEmbeddingGenerator(),
+            settings.EmbeddingModel,
+            settings.MinScore);
     }
 }
