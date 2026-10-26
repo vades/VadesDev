@@ -36,7 +36,7 @@ public class RagPipeline
         Console.WriteLine($"\n? {question}");
 
         var queryVector = await _embedder.GenerateVectorAsync(question);
-        var hits = _retriever.Search(queryVector);
+        var hits = await _retriever.SearchAsync(queryVector);
         PrintHits(hits);
 
         if (hits.Count == 0)
