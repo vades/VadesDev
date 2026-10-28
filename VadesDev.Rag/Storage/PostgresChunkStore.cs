@@ -10,7 +10,7 @@ namespace VadesDev.Rag.Storage;
 /// </summary>
 public class PostgresChunkStore
 {
-    private const string CreateTableSql = """
+    private const string EnsureSchemaSql = """
         CREATE TABLE IF NOT EXISTS rag.chunks (
             embedding_model text   NOT NULL,
             id              text   NOT NULL,
@@ -18,14 +18,21 @@ public class PostgresChunkStore
             content         text   NOT NULL,
             embedding       vector NOT NULL,
             PRIMARY KEY (embedding_model, id)
-        )
+        );
+        ALTER TABLE rag.chunks ADD COLUMN IF NOT EXISTS source_hash text;
+        """;
+
+    private const string IsUpToDateSql = """
+        SELECT EXISTS (
+            SELECT 1 FROM rag.chunks
+            WHERE embedding_model = $1 AND source = $2 AND source_hash = $3)
         """;
 
     private const string DeleteSql =
         "DELETE FROM rag.chunks WHERE embedding_model = $1 AND source = ANY($2)";
 
     private const string InsertSql =
-        "INSERT INTO rag.chunks (embedding_model, id, source, content, embedding) VALUES ($1, $2, $3, $4, $5)";
+        "INSERT INTO rag.chunks (embedding_model, id, source, content, embedding, source_hash) VALUES ($1, $2, $3, $4, $5, $6)";
 
     private const string SearchSql = """
         SELECT id, source, content, 1 - (embedding <=> $1) AS similarity
@@ -43,20 +50,39 @@ public class PostgresChunkStore
     }
 
     /// <summary>
-    /// Creates the table rag.chunks if it does not exist yet. Call once at startup.
+    /// Creates the table rag.chunks (and its source_hash column) if they do not exist yet. Call once at startup.
     /// </summary>
     public async Task EnsureSchemaAsync()
     {
-        await using var command = _dataSource.CreateCommand(CreateTableSql);
+        await using var command = _dataSource.CreateCommand(EnsureSchemaSql);
         await command.ExecuteNonQueryAsync();
     }
 
     /// <summary>
-    /// Replaces the stored chunks of the given sources for one embedding model, in a single transaction.
+    /// True if this source is already stored for this embedding model with exactly this fingerprint.
     /// </summary>
-    public async Task ReplaceChunksAsync(string embeddingModel, List<IndexedChunk> chunks)
+    public async Task<bool> IsUpToDateAsync(string embeddingModel, string source, string sourceHash)
+    {
+        await using var command = _dataSource.CreateCommand(IsUpToDateSql);
+        command.Parameters.AddWithValue(embeddingModel);
+        command.Parameters.AddWithValue(source);
+        command.Parameters.AddWithValue(sourceHash);
+
+        return (bool)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>
+    /// Replaces the stored chunks of one source for one embedding model and saves the fingerprint, in a single transaction.
+    /// All chunks must belong to the same source.
+    /// </summary>
+    public async Task ReplaceChunksAsync(string embeddingModel, string sourceHash, List<IndexedChunk> chunks)
     {
         var sources = chunks.Select(c => c.Chunk.Source).Distinct().ToArray();
+
+        if (sources.Length != 1)
+        {
+            throw new ArgumentException("The chunks must belong to exactly one source.", nameof(chunks));
+        }
 
         await using var connection = await _dataSource.OpenConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
@@ -65,7 +91,7 @@ public class PostgresChunkStore
 
         foreach (var chunk in chunks)
         {
-            await InsertChunkAsync(connection, transaction, embeddingModel, chunk);
+            await InsertChunkAsync(connection, transaction, embeddingModel, sourceHash, chunk);
         }
 
         await transaction.CommitAsync();
@@ -108,10 +134,10 @@ public class PostgresChunkStore
     }
 
     /// <summary>
-    /// Inserts one chunk with its vector.
+    /// Inserts one chunk with its vector and the fingerprint of its source.
     /// </summary>
     private static async Task InsertChunkAsync(
-        NpgsqlConnection connection, NpgsqlTransaction transaction, string embeddingModel, IndexedChunk chunk)
+        NpgsqlConnection connection, NpgsqlTransaction transaction, string embeddingModel, string sourceHash, IndexedChunk chunk)
     {
         await using var command = new NpgsqlCommand(InsertSql, connection, transaction);
         command.Parameters.AddWithValue(embeddingModel);
@@ -119,6 +145,7 @@ public class PostgresChunkStore
         command.Parameters.AddWithValue(chunk.Chunk.Source);
         command.Parameters.AddWithValue(chunk.Chunk.Text);
         command.Parameters.AddWithValue(new Vector(chunk.Vector));
+        command.Parameters.AddWithValue(sourceHash);
         await command.ExecuteNonQueryAsync();
     }
 }
