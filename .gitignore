@@ -7,3 +7,5 @@ riderModule.iml
 _project/
 *.DotSettings.user
 appsettings.Local.json
+
+.env

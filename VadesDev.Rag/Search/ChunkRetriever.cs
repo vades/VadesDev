@@ -1,33 +1,33 @@
-using System.Numerics.Tensors;
 using VadesDev.Rag.Configuration;
 using VadesDev.Rag.Models;
+using VadesDev.Rag.Storage;
 
 namespace VadesDev.Rag.Search;
 
 /// <summary>
-/// Searches the index: scores every chunk against a question vector and returns the best hits.
+/// Searches the stored chunks: asks the database for the nearest chunks of one embedding model
+/// and keeps the hits that reach MinScore (best first, at most TopK).
 /// </summary>
 public class ChunkRetriever
 {
-    private readonly List<IndexedChunk> _index;
+    private readonly PostgresChunkStore _store;
+    private readonly string _embeddingModel;
     private readonly RagSettings _settings;
 
-    public ChunkRetriever(List<IndexedChunk> index, RagSettings settings)
+    public ChunkRetriever(PostgresChunkStore store, string embeddingModel, RagSettings settings)
     {
-        _index = index;
+        _store = store;
+        _embeddingModel = embeddingModel;
         _settings = settings;
     }
 
     /// <summary>
     /// Returns the best chunks for a question vector: above MinScore, highest score first, at most TopK.
     /// </summary>
-    public List<SearchHit> Search(ReadOnlyMemory<float> queryVector)
+    public async Task<List<SearchHit>> SearchAsync(ReadOnlyMemory<float> queryVector)
     {
-        return _index
-            .Select(i => new SearchHit(i.Chunk, TensorPrimitives.CosineSimilarity(queryVector.Span, i.Vector.Span)))
-            .Where(h => h.Score >= _settings.MinScore)
-            .OrderByDescending(h => h.Score)
-            .Take(_settings.TopK)
-            .ToList();
+        var nearest = await _store.SearchAsync(_embeddingModel, queryVector, _settings.TopK);
+
+        return nearest.Where(h => h.Score >= _settings.MinScore).ToList();
     }
 }
