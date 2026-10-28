@@ -1,31 +1,29 @@
-﻿using VadesDev.Rag.Configuration;
-using VadesDev.Rag.Embeddings;
-using VadesDev.Rag.Knowledge;
+﻿using VadesDev.Rag.Agents;
+using VadesDev.Rag.Cli;
+using VadesDev.Rag.Configuration;
+using VadesDev.Rag.Documents;
+using VadesDev.Rag.Prompting;
+using VadesDev.Rag.Providers;
 using VadesDev.Rag.Search;
 using VadesDev.Rag.Storage;
 
-await using var dataSource = PostgresDataSourceFactory.Create(AppConfiguration.Build());
+var configuration = AppConfiguration.Build();
+var provider = new AiProviderFactory(configuration).Create();
+Console.WriteLine($"Provider: {provider.Name} (model {provider.EmbeddingModel}, MinScore {provider.MinScore})");
+
+// Phase 5: the vector database (PostgreSQL + pgvector).
+await using var dataSource = PostgresDataSourceFactory.Create(configuration);
 var store = new PostgresChunkStore(dataSource);
 await store.EnsureSchemaAsync();
 
-var all = new DummyKnowledgeBase().GetChunks();
-var chunks = all.Where(c => c.Source == "support.md").ToArray();
-var embedder = new HashingEmbeddingGenerator();
-var index = await new ChunkIndexer(embedder).BuildIndexAsync(chunks);
-var hash = ChunkHasher.Compute(chunks);
+// Read, chunk, sanitize, embed and store the file, unless it is unchanged.
+var path = Path.Combine(AppContext.BaseDirectory, "Data", "knowledge.md");
+var indexer = new ChunkIndexer(provider.EmbeddingGenerator);
+await new IngestionPipeline(new MarkdownFileReader(), indexer, store, provider.EmbeddingModel).IngestAsync(path);
+Console.WriteLine();
 
-Console.WriteLine(await store.IsUpToDateAsync("fake", "support.md", hash));        // False: nothing stored yet
-await store.ReplaceChunksAsync("fake", hash, index);
-Console.WriteLine(await store.IsUpToDateAsync("fake", "support.md", hash));        // True
-Console.WriteLine(await store.IsUpToDateAsync("fake", "support.md", "other"));     // False: other fingerprint
-Console.WriteLine(await store.IsUpToDateAsync("other-model", "support.md", hash)); // False: other model
+var retriever = new ChunkRetriever(store, provider.EmbeddingModel, new RagSettings(provider.MinScore));
+var agent = new RagAgentFactory().Create(provider.ChatClient);
+var pipeline = new RagPipeline(provider.EmbeddingGenerator, retriever, new GroundedPromptBuilder(), agent);
 
-try
-{
-    var twoSources = await new ChunkIndexer(embedder).BuildIndexAsync(all);
-    await store.ReplaceChunksAsync("fake", "x", twoSources);
-}
-catch (ArgumentException exception)
-{
-    Console.WriteLine(exception.Message);
-}
+await new ConsoleRunner(pipeline).RunAsync();
