@@ -190,17 +190,41 @@ IEmbeddingGenerator<string, Embedding<float>> embedder = client.GetEmbeddingClie
 
 ## Skill: vector-storage
 
-**Use when:** storing embeddings in a database (PostgreSQL with pgvector, or another vector store). This skill is forward-looking. Verify every detail against the current library and database documentation.
+**Use when:** storing embeddings in a database (PostgreSQL with pgvector, or another vector store). Verify library names and versions against the current documentation. The facts below were checked in practice with pgvector 0.8.x, Npgsql and the `Pgvector` NuGet package.
 
-- Store, per chunk: id, source, text, vector, and the **embedding model name and dimension**.
-- The vector column dimension must equal the embedding model's dimension. Different models need different columns or tables, or a full re-index when you switch.
-- Check the **index size limits** of your pgvector version for the vector type you use, because high-dimensional vectors (several thousand) may not be indexable with the plain type. Options when it matters: a lower-dimension model, reduced output dimensions if the model supports it, or another vector type. (Verify before choosing.)
-- pgvector uses distance operators, not similarity. Cosine distance and cosine similarity are related (`similarity = 1 - distance`). Convert so that your `MinScore` keeps its meaning.
-- Use a concrete store class behind the same search contract as the in-memory retriever (question vector in, ordered hits out).
-- Use migrations or a schema script, and a local container for development.
-- Keep connection strings in secrets, not in code.
+### Data model
 
----
+- Store, per chunk: id, source, text, vector, and the **embedding model name**. Put the model name in the primary key, so vectors of different models never clash.
+- Also store a **fingerprint** of the source's cleaned chunks (for example SHA-256 over ids and texts), so an unchanged source is not embedded again. Check it per source **and** per model.
+- A vector column without a fixed size accepts vectors of different dimensions. The database stops with an error when one query compares different sizes, so **every search must filter by the model and by the vector size** (`vector_dims(embedding) = <size>`).
+- Replace the rows of one source in **one transaction** (delete the old rows, insert the new ones). A failed run must never leave a half-filled index.
+
+### Search and similarity
+
+- pgvector returns **distances**, not similarities. The cosine distance operator is `<=>`, and `similarity = 1 - distance`. Convert, so a calibrated `MinScore` keeps its meaning.
+- Keep the policy (threshold, number of results) outside the store. The store returns the nearest rows, sorted. The retriever applies `MinScore` and `TopK`.
+- The search is I/O, so it is `async`. Keep the contract stable: question vector in, ordered hits with scores out.
+
+### Indexes
+
+- Without an index, the search is an **exact scan**. It is fast for small data and gives the same scores as an in-memory calculation, so thresholds calibrated earlier stay valid.
+- **Index size limits:** the plain `vector` type can be indexed only up to **2000 dimensions**, and `halfvec` up to **4000**. Vectors can be stored up to 16000 dimensions without an index. Options for larger vectors: an expression index with a `halfvec` cast (use the same cast in the query), a model with smaller vectors, or reduced output dimensions if the model supports it.
+- Approximate indexes (HNSW, IVFFlat) can change results. Recalibrate the threshold after you add one.
+
+### Access from .NET
+
+- Use Npgsql with the `Pgvector` package. Enable the type mapping with `UseVector()` on the `NpgsqlDataSourceBuilder`, and pass vectors as `Vector` objects with positional parameters (`$1`, `$2`, ...). Read them back as `Vector` and call `ToArray()`.
+- Create the `NpgsqlDataSource` once, share it, and dispose it at the end. Use short-lived connections and commands.
+- Plain SQL is enough for a few statements. Use an ORM for the relational part of the app, not for vector search.
+- Create the extension (`CREATE EXTENSION IF NOT EXISTS vector;`) with an init script. The pgvector images only install it.
+- Keep connection strings and passwords in secrets, not in code or committed files.
+
+### Local development with Docker
+
+- Use a pgvector image (for example `pgvector/pgvector:pg17`), a named volume, a healthcheck, a port bound to `127.0.0.1`, and a gitignored `.env` for the password.
+- Init scripts (`/docker-entrypoint-initdb.d`) run only on the first start with an empty volume. A changed password in `.env` does not change the stored one.
+- PostgreSQL 18 images use a versioned data path. Check the image documentation before choosing the volume mount.
+- `docker compose down -v` deletes the data. Do not run it casually.
 
 ## Skill: configuration-and-secrets
 
@@ -236,15 +260,19 @@ IEmbeddingGenerator<string, Embedding<float>> embedder = client.GetEmbeddingClie
 - Splitting paragraphs on `"\n\n"` only, which fails for Windows line endings (`\r\n`).
 - Reusing a `MinScore` from another embedding model. Everything is rejected, or everything is accepted.
 - Missing `using Microsoft.Extensions.AI;`, which hides extension methods.
-- Package version conflicts (`NU1605`) after adding a provider package.
+- Package version conflicts (`NU1605`) after adding a provider or database package.
 - Default `HttpClient` timeout (100 seconds) too short for local models.
 - Running with `dotnet watch`: every save restarts the app and repeats demo questions, which burns quota. Interactive console input also behaves badly.
 - Assuming a free-tier quota from documentation or memory. Read the usage page.
 - A file that is not copied to the output folder (`knowledge.md`, `appsettings.json`).
 - A fake chat client that answers with the first line of the first source. Judge retrieval by the printed scores and chunk ids.
 - Disabling thinking on a model that always thinks, which puts the reasoning into the answer text.
-
----
+- Changing a method to async (for example `Search` to `SearchAsync`) without updating every caller.
+- Comparing vectors of different sizes in one query. Filter by model and vector size.
+- Putting a secret file under version control: Git does not apply `.gitignore` to files that are already staged or tracked. Add the rule first, and check with `git check-ignore -v`.
+- Expecting database init scripts to run again on an existing volume, or a changed `.env` password to change the stored one.
+- Skipping embedding based on a fingerprint without including the model name. Another model must always embed again. A model that changes behind the same name is not noticed, so use explicit version tags.
+- Treating the first test as proof of the calibration. Recalibrate when content grows, and compare scores before and after every storage or chunking change.
 
 ## Definition of done for a change
 
