@@ -424,8 +424,8 @@ Repeat this check after any change to the SQL, the chunker, the sanitizer or the
 | Score parity with Ollama and Gemini after the move to PostgreSQL | Verified |
 | Skip when unchanged (second start prints `Up to date`) with Ollama and Gemini | Verified |
 | Table: 5 rows per model, no duplicates after repeated runs, fingerprints stored | Verified |
-| **Change detection:** an edited `knowledge.md` is embedded again | Not checked yet |
-| **Ollama stopped at startup:** app starts and shows a `!` line at the first question | Not checked yet |
+| **Change detection:** an edited `knowledge.md` is embedded again, the old rows are replaced (still 5 per model), and the restored file is embedded again, then skipped | Verified |
+| **Ollama stopped at startup:** with an unchanged file the app starts and shows a `!` line at the questions, with no stack trace | Verified |
 | **Database stopped at startup:** expected to end with a stack trace (known gap) | Not checked yet |
 | Exception type of OllamaSharp for a wrong model name | Not checked yet |
 
