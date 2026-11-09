@@ -169,13 +169,15 @@ Rules:
 | Chosen `MinScore` | 0.60 | 0.40 |
 
 - **Parity values** (top-1 scores that must not change when storage, SQL, chunker, sanitizer or model change): Ollama 0.665 support hours, 0.771 password, 0.789 2FA, 0.580 money back, 0.548 package, 0.462 reach your team. Gemini 0.747, 0.740, 0.792, 0.654, 0.659, 0.704.
+- **Re-run `Data/eval-questions.md` after every change** to the chunker, sanitizer, embedding model, `MinScore`, prompt, agent instructions or storage. Check retrieval first (fake chat client, `MinScore: 0f`, compare top-1 chunk and score), then generation. Update the file in the same change when `knowledge.md` changes.
 - Reference questions that worked: `What are your support hours?`, `How do I reset my password?`, `Do you support 2FA?`, `When can I reach your team?`, `Can I get my money back?`, `How long until my package arrives?`. Out of scope: `Do you sell pizza?`, `Who is the CEO of the company?`, `What is the capital of France?`.
 - Known weak spots: one or two word queries were rejected at 0.40 with `embeddinggemma`. Both models are very cautious when the chunk does not contain the complete answer, and Gemini refused the package question although the right chunk was retrieved.
 - Error checks: stop Ollama while the app waits for input (expect a `!` line and the prompt again), wrong provider name (expect the unknown-provider message), missing Gemini key (expect `ArgumentException`), missing connection string (expect the clear message).
 
 **Status at the end of Phase 5**
-- **Verified:** connection and vector round trip, mixed sizes in one column, the error without the size filter, score parity with Ollama and Gemini after the move to PostgreSQL, skipping unchanged files (second start) with both providers, 5 rows per model with fingerprints and no duplicates after repeated runs.
-- **Not checked yet:** (1) change detection (an edited `knowledge.md` is embedded again, and the table keeps 5 rows), (2) Ollama stopped at startup (app starts, `!` line at the first question), (3) database stopped at startup (expected stack trace, known gap), (4) the exception type OllamaSharp throws for a wrong model name, (5) `Data/eval-questions.md` (question, expected chunk, in scope or not) is not created yet, and it is worth adding before the next change to retrieval.
+- **Verified:** connection and vector round trip, mixed sizes in one column, the error without the size filter, score parity with Ollama and Gemini after the move to PostgreSQL, skipping unchanged files (second start) with both providers, 5 rows per model with fingerprints and no duplicates after repeated runs, **change detection** (an edited `knowledge.md` is embedded again, the rows are replaced and not duplicated, and the restored file is embedded again and then skipped), and **Ollama stopped at startup** (with an unchanged file the app starts and shows a `!` line at the questions, with no stack trace).
+- **Not checked yet:** (1) database stopped at startup (expected stack trace, known gap), (2) the exception type OllamaSharp throws for a wrong model name. The evaluation set `Data/eval-questions.md` now exists. Two of its cases have not been run yet (shipping cost: chunk found but answer not in it, and a question that matches two sections).
+- **Known gap, by design:** if the file changed **and** Ollama is stopped, the embedding happens at startup in `Program.cs`, outside `ConsoleRunner`, and ends with a stack trace (Phase 6).
 
 ## Skill: vadesdev-phases
 
@@ -205,7 +207,7 @@ Rules:
 - Entity Framework Core in the `app` schema, with `ConnectionStrings:App`. Migrations for this schema only. For login, check ASP.NET Core Identity first, and verify package versions and setup in the current documentation. No repository on top of `DbContext`.
 
 **Backlog**
-- An evaluation question set (`Data/eval-questions.md`).
+- An evaluation runner that reads `Data/eval-questions.md` (today the set is run by hand).
 - The chunker has no size limit and no overlap.
 - The sanitizer does not defend against prompt injection. Bullet markers and tables are not handled.
 - Query rewriting for very short queries.

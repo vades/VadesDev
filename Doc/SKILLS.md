@@ -11,6 +11,7 @@ For humans: [`README.md`](README.md) (overview) and [`DEVELOPER_GUIDE.md`](DEVEL
 ## Constraints (never break these)
 
 - Best practices, but **simple**. Keep it simple.
+- Prefer ** Vertical Slice Architecture (Feture Architecture)** to manage folder structure. No 'Common' and 'Core' folders.
 - **Single responsibility** per class and per method.
 - Methods stay **between 20 and 30 lines** (shorter is fine).
 - **No interfaces of our own.** Use and implement only the framework interfaces (`IChatClient`, `IEmbeddingGenerator<string, Embedding<float>>`). Use concrete classes and the fakes for tests.

@@ -234,7 +234,7 @@ Values are read in layers, and later layers win: `appsettings.json`, then `appse
 - If the database is not reachable at startup, the app ends with an error from the framework (planned for Phase 6). A stopped AI server is handled per question with a readable message.
 - The chunker splits by paragraph only: no size limits and no overlap.
 - Very short queries (one or two words) match less reliably with the local embedding model.
-- The strict system prompt makes models refuse when the chunk does not contain the complete answer, for example a question about a purchase date. An evaluation question set is on the backlog.
+- The strict system prompt makes models refuse when the chunk does not contain the complete answer, for example a question about a purchase date. The fixed question set in [`Data/eval-questions.md`](Data/eval-questions.md) shows which cases are known to be cautious.
 - The sanitizer removes formatting noise but does **not** protect against prompt injection.
 
 ---

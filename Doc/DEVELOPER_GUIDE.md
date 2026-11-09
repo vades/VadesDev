@@ -384,7 +384,7 @@ Results from this project (5 chunks, `knowledge.md`):
 | Strongest false top-1 | 0.554 | 0.305 |
 | **MinScore chosen** | **0.60** | **0.40** |
 
-Recalibrate when the knowledge base grows or the embedding model changes. The small samples here are a starting point, not proof.
+Recalibrate when the knowledge base grows or the embedding model changes. The small samples here are a starting point, not proof. The questions and the measured scores live in `Data/eval-questions.md`: re-run that set after every change to the chunker, the sanitizer, the embedding model, `MinScore`, the prompt or the storage, and compare retrieval (right chunk?) separately from generation (right answer?).
 
 ### 5.4 Parity check: database versus in-memory
 
@@ -558,4 +558,4 @@ Useful Ollama commands: `ollama list`, `ollama ps`, `ollama stop <model>` (unloa
 - **Phase 6, CLI MVP.** Read a folder of documents, ingest file by file (the fingerprint already works per source), remove rows of files that were deleted or became empty, handle a startup failure (AI server or database not running) with a clear message, consider the first test project, and check Microsoft's `DataIngestion` libraries before writing more reader and chunker code.
 - **Phase 7, FastEndpoints.** `RagPipeline.AskAsync` should return the answer and hits instead of printing, so the CLI and the API can share it. Provider errors map to HTTP status codes. Add `CancellationToken`.
 - **Phase 8, relational database.** Entity Framework Core in the `app` schema of the same database (users, login, chat history), with `ConnectionStrings:App`. For login, check ASP.NET Core Identity first.
-- **Backlog.** An evaluation question set (`Data/eval-questions.md`) to re-run after every change, query rewriting for short queries, a chunk size limit and overlap, and an explicit embedding model version tag.
+- **Backlog.** Query rewriting for short queries, a chunk size limit and overlap, an explicit embedding model version tag, and a small evaluation runner that reads `Data/eval-questions.md` (today the set is run by hand).
