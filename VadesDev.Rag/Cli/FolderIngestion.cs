@@ -1,4 +1,3 @@
-// Path: VadesDev.Rag/Cli/FolderIngestion.cs
 using VadesDev.Rag.Storage;
 
 namespace VadesDev.Rag.Cli;
