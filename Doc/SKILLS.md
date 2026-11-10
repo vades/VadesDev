@@ -1,4 +1,4 @@
-# SKILLS_RAG.md
+# SKILLS.md
 
 Project-specific instructions for coding agents working on **`VadesDev.Rag`**.
 
