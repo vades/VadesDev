@@ -12,20 +12,36 @@ await store.EnsureSchemaAsync();
 
 var ingestion = new IngestionPipeline(
     new MarkdownFileReader(), new ChunkIndexer(new HashingEmbeddingGenerator()), store, "fake");
+var folderIngestion = new FolderIngestion(ingestion, store, "fake");
 
-var path = Path.Combine(Path.GetTempPath(), "ingest-test.md");
+var folder = Path.Combine(Path.GetTempPath(), "folder-test");
+Directory.CreateDirectory(folder);
+var a = Path.Combine(folder, "a.md");
+var b = Path.Combine(folder, "b.md");
+var c = Path.Combine(folder, "c.md");
 
-File.WriteAllText(path, "# A\n\nText one.\n\n# B\n\nText two.");
-Console.WriteLine(await ingestion.IngestAsync(path));
+File.WriteAllText(a, "# A\n\nText one.");
+File.WriteAllText(b, "# B\n\nText two.");
+File.WriteAllText(c, "# C\n\nText three.");
 
-Console.WriteLine(await ingestion.IngestAsync(path));
+Console.WriteLine("--- run 1: three new files");
+await folderIngestion.IngestFolderAsync(folder);
 
-File.WriteAllText(path, "# A\n\nText one changed.\n\n# B\n\nText two.");
-Console.WriteLine(await ingestion.IngestAsync(path));
+Console.WriteLine("--- run 2: unchanged");
+await folderIngestion.IngestFolderAsync(folder);
 
-File.WriteAllText(path, "");
-Console.WriteLine(await ingestion.IngestAsync(path));
+Console.WriteLine("--- run 3: b.md deleted, c.md emptied");
+File.Delete(b);
+File.WriteAllText(c, "");
+await folderIngestion.IngestFolderAsync(folder);
 
-Console.WriteLine(await store.DeleteSourcesExceptAsync("fake", []));
+Console.WriteLine("--- run 4: missing folder");
+try { await folderIngestion.IngestFolderAsync(Path.Combine(folder, "missing")); }
+catch (DirectoryNotFoundException exception) { Console.WriteLine(exception.Message); }
 
-File.Delete(path);
+Console.WriteLine("--- run 5: folder empty");
+File.Delete(a);
+File.Delete(c);
+await folderIngestion.IngestFolderAsync(folder);
+
+Directory.Delete(folder);
