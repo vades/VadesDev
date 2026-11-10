@@ -1,30 +1,42 @@
-﻿using System.Net.Sockets;
-using Microsoft.Extensions.Configuration;
-using Npgsql;
+﻿// Path: VadesDev.Rag/Program.cs
 using VadesDev.Rag.Agents;
 using VadesDev.Rag.Cli;
 using VadesDev.Rag.Configuration;
 using VadesDev.Rag.Documents;
-using VadesDev.Rag.Embeddings;
+using VadesDev.Rag.Prompting;
+using VadesDev.Rag.Providers;
 using VadesDev.Rag.Search;
 using VadesDev.Rag.Storage;
 
-Console.WriteLine(await StartupGuard.RunAsync(() => Task.CompletedTask));
+var configuration = AppConfiguration.Build();
+var provider = new AiProviderFactory(configuration).Create();
+Console.WriteLine($"Provider: {provider.Name} (model {provider.EmbeddingModel}, MinScore {provider.MinScore})");
 
-Console.WriteLine(await StartupGuard.RunAsync(
-    () => Task.FromException(new HttpRequestException("no connection"))));
+await using var dataSource = PostgresDataSourceFactory.Create(configuration);
+var store = new PostgresChunkStore(dataSource);
 
-Console.WriteLine(await StartupGuard.RunAsync(
-    () => Task.FromException(new NpgsqlException("no connection", new SocketException()))));
+var indexer = new ChunkIndexer(provider.EmbeddingGenerator);
+var ingestion = new IngestionPipeline(new MarkdownFileReader(), indexer, store, provider.EmbeddingModel);
+var folderIngestion = new FolderIngestion(ingestion, store, provider.EmbeddingModel);
+var folder = Path.Combine(AppContext.BaseDirectory, "Data");
 
-Console.WriteLine(await StartupGuard.RunAsync(
-    () => Task.FromException(new DirectoryNotFoundException("Knowledge folder not found: C:\\nope"))));
-
-try
+var started = await StartupGuard.RunAsync(async () =>
 {
-    await StartupGuard.RunAsync(() => Task.FromException(new InvalidOperationException("bug")));
-}
-catch (InvalidOperationException exception)
+    await store.EnsureSchemaAsync();
+    await folderIngestion.IngestFolderAsync(folder);
+});
+
+if (!started)
 {
-    Console.WriteLine($"not caught, as intended: {exception.Message}");
+    return 1;
 }
+
+Console.WriteLine();
+
+var retriever = new ChunkRetriever(store, provider.EmbeddingModel, new RagSettings(provider.MinScore));
+var agent = new RagAgentFactory().Create(provider.ChatClient);
+var pipeline = new RagPipeline(provider.EmbeddingGenerator, retriever, new GroundedPromptBuilder(), agent);
+
+await new ConsoleRunner(pipeline).RunAsync();
+
+return 0;

@@ -1,3 +1,4 @@
+// Path: VadesDev.Rag/Cli/ConsoleRunner.cs
 namespace VadesDev.Rag.Cli;
 
 /// <summary>
@@ -53,7 +54,8 @@ public class ConsoleRunner
     }
 
     /// <summary>
-    /// Asks one question and prints a short message if the AI provider fails, instead of ending the program.
+    /// Asks one question and prints a short message if the AI provider or the database fails,
+    /// instead of ending the program.
     /// </summary>
     private async Task TryAskAsync(string question)
     {
@@ -64,6 +66,10 @@ public class ConsoleRunner
         catch (Exception exception) when (ProviderErrors.IsProviderError(exception))
         {
             Console.WriteLine($"  ! {ProviderErrors.Describe(exception)}");
+        }
+        catch (Exception exception) when (DatabaseErrors.IsDatabaseError(exception))
+        {
+            Console.WriteLine($"  ! {DatabaseErrors.Describe(exception)}");
         }
     }
 }
