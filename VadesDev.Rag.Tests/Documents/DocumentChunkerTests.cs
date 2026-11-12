@@ -1,4 +1,3 @@
-// Path: VadesDev.Rag.Tests/Documents/DocumentChunkerTests.cs
 using VadesDev.Rag.Documents;
 using VadesDev.Rag.Models;
 
