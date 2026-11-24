@@ -1,3 +1,4 @@
+// Path: VadesDev.Rag/Storage/PostgresChunkStore.cs
 using Npgsql;
 using Pgvector;
 using VadesDev.Rag.Models;
@@ -30,6 +31,9 @@ public class PostgresChunkStore
 
     private const string DeleteSql =
         "DELETE FROM rag.chunks WHERE embedding_model = $1 AND source = ANY($2)";
+
+    private const string DeleteExceptSql =
+        "DELETE FROM rag.chunks WHERE embedding_model = $1 AND source <> ALL($2)";
 
     private const string InsertSql =
         "INSERT INTO rag.chunks (embedding_model, id, source, content, embedding, source_hash) VALUES ($1, $2, $3, $4, $5, $6)";
@@ -95,6 +99,19 @@ public class PostgresChunkStore
         }
 
         await transaction.CommitAsync();
+    }
+
+    /// <summary>
+    /// Removes the rows of sources that are no longer in the knowledge folder and returns the number of deleted rows.
+    /// An empty list removes every row of this embedding model. Rows of other models are never touched.
+    /// </summary>
+    public async Task<int> DeleteSourcesExceptAsync(string embeddingModel, string[] keepSources)
+    {
+        await using var command = _dataSource.CreateCommand(DeleteExceptSql);
+        command.Parameters.AddWithValue(embeddingModel);
+        command.Parameters.AddWithValue(keepSources);
+
+        return await command.ExecuteNonQueryAsync();
     }
 
     /// <summary>

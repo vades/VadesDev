@@ -1,3 +1,4 @@
+// Path: VadesDev.Rag/Cli/IngestionPipeline.cs
 using VadesDev.Rag.Documents;
 using VadesDev.Rag.Models;
 using VadesDev.Rag.Search;
@@ -27,8 +28,10 @@ public class IngestionPipeline
 
     /// <summary>
     /// Makes sure the file is stored for the current embedding model. Skips the embedding if nothing changed.
+    /// Returns true if the file has content and is now stored (or was already up to date),
+    /// and false if it has no chunks, so the caller can remove its old rows.
     /// </summary>
-    public async Task IngestAsync(string path)
+    public async Task<bool> IngestAsync(string path)
     {
         var document = await _reader.ReadAsync(path);
         var chunks = PrepareChunks(document);
@@ -36,7 +39,7 @@ public class IngestionPipeline
         if (chunks.Length == 0)
         {
             Console.WriteLine($"No chunks found in {document.Source}, skipped.");
-            return;
+            return false;
         }
 
         var sourceHash = ChunkHasher.Compute(chunks);
@@ -44,10 +47,11 @@ public class IngestionPipeline
         if (await _store.IsUpToDateAsync(_embeddingModel, document.Source, sourceHash))
         {
             Console.WriteLine($"Up to date: {document.Source} ({chunks.Length} chunks), embedding skipped.");
-            return;
+            return true;
         }
 
         await EmbedAndStoreAsync(chunks, sourceHash);
+        return true;
     }
 
     /// <summary>

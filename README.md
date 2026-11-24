@@ -11,8 +11,9 @@ The app reads a knowledge file, stores it as vectors in **PostgreSQL with pgvect
 ## What it does today
 
 ```
-INGESTION (at startup, skipped when the file is unchanged)
-Markdown file -> chunk -> sanitize -> fingerprint -> embed -> store in PostgreSQL (pgvector)
+INGESTION (at startup, file by file, a file is skipped when it is unchanged)
+Data/*.md -> chunk -> sanitize -> fingerprint -> embed -> store in PostgreSQL (pgvector)
+          -> remove the rows of files that were deleted or are empty
 
 QUESTION
 question -> embed -> nearest chunks from PostgreSQL (cosine similarity)
@@ -21,16 +22,16 @@ question -> embed -> nearest chunks from PostgreSQL (cosine similarity)
          -> grounded prompt -> agent (LLM) -> answer
 ```
 
-1. **Read** a Markdown file (`Data/knowledge.md`).
+1. **Read** every Markdown file in the folder `Data/` (top level, `*.md`), one after the other.
 2. **Chunk** it by paragraph, joining each heading with the paragraph below it.
 3. **Sanitize** each chunk: remove links, Markdown symbols, control characters and repeated spaces.
 4. **Fingerprint** the cleaned chunks (SHA-256). If the file is already stored for the current embedding model with the same fingerprint, embedding is **skipped**.
-5. **Embed and store** the chunks with an embedding model into the table `rag.chunks`, in one transaction.
+5. **Embed and store** the chunks with an embedding model into the table `rag.chunks`, in one transaction per file. When all files are done, the rows of files that were deleted from `Data/` or became empty are removed (for the current embedding model only).
 6. **Search**: embed the question and let PostgreSQL return the nearest chunks of the same embedding model (exact cosine search, no index).
 7. **Guardrail**: no hit at or above the threshold (`MinScore`) means no LLM call, and the answer is "I don't know".
 8. **Answer**: build a prompt with numbered sources and ask the agent. The agent's instructions say to answer only from the context.
 
-Example session (Ollama, second start):
+Example session (Ollama, second start; the scores are examples):
 
 ```
 Provider: Ollama (model embeddinggemma:latest, MinScore 0,4)
@@ -38,7 +39,7 @@ Up to date: knowledge.md (5 chunks), embedding skipped.
 
 ? What are your support hours?
   retrieved [knowledge.md-2] score=0,665  (knowledge.md)
-  Answer: Monday through Friday, 9 AM to 5 PM CET.
+  Answer: Monday through Friday, 9 AM to 6 PM CET.
 
 ? Do you sell pizza?
   ! No relevant context found. Answer: I don't know.
@@ -59,6 +60,7 @@ Up to date: knowledge.md (5 chunks), embedding skipped.
 | Database access | Npgsql and the `Pgvector` package, plain SQL |
 | Vector math (fake embedder) | `System.Numerics.Tensors` |
 | Configuration | `Microsoft.Extensions.Configuration` (JSON files and environment variables) |
+| Tests | xUnit v3 (`xunit.v3.mtp-v2`) on the Microsoft Testing Platform |
 | Planned | FastEndpoints (REST API), Entity Framework Core and ASP.NET Core Identity (users, chat history) |
 
 The pipeline only knows the framework interfaces `IChatClient` and `IEmbeddingGenerator`. That is why switching between Ollama and Gemini is a configuration change, not a code change.
@@ -93,8 +95,8 @@ The pipeline only knows the framework interfaces `IChatClient` and `IEmbeddingGe
 | 3 | Read text from a Markdown file (reader, chunker, sanitizer) | Done |
 | 4 | Real LLM chat and real embeddings (Ollama and Gemini) | Done |
 | 5 | PostgreSQL and pgvector to store the data | Done |
-| 6 | RAG MVP as a CLI application | Planned |
-| 7 | REST API with FastEndpoints | Planned |
+| 6 | RAG MVP as a CLI application (folder ingestion, cleanup of deleted files, startup error messages, first tests) | Done |
+| 7 | REST API with FastEndpoints | Next |
 | 8 | Relational database with Entity Framework Core (users, login, chat history) | Planned |
 
 ---
@@ -107,22 +109,24 @@ VadesDev/                           solution folder (VadesDev.slnx)
 ├── .env                            local database credentials (gitignored)
 ├── .env.example                    template for .env
 ├── db/init/01-init.sql             extension vector, schemas app and rag (first start only)
+├── global.json                     test runner setting (Microsoft Testing Platform)
+├── VadesDev.Rag.Tests/             xUnit tests, database tests need Docker (see DEVELOPER_GUIDE.md)
 └── VadesDev.Rag/
     ├── Program.cs                  wiring only
     ├── appsettings.json            provider choice, models, MinScore per provider
     ├── appsettings.Local.json      secrets: Gemini key, connection strings (gitignored)
-    ├── Data/knowledge.md           the knowledge file
+    ├── Data/*.md                   the knowledge files (top level only, unique file names)
     ├── Models/                     DocumentChunk, IndexedChunk, SearchHit, SourceDocument
     ├── Configuration/              AppConfiguration, RagSettings, GeminiSettings, OllamaSettings
     ├── Documents/                  MarkdownFileReader, DocumentChunker, TextSanitizer
-    ├── Embeddings/                 fake embedder (HashingEmbeddingGenerator), TextTokenizer, Fnv1aHasher
+    ├── Embeddings/                 fake embedder (HashingEmbeddingGenerator), TextTokenizer, Fnv1AHasher
     ├── Search/                     ChunkIndexer, ChunkHasher, ChunkRetriever
     ├── Storage/                    PostgresDataSourceFactory, PostgresChunkStore (all SQL)
     ├── Prompting/                  GroundedPromptBuilder
     ├── Providers/                  GeminiClientFactory, OllamaClientFactory, AiProvider, AiProviderFactory
     ├── Chat/                       fake chat client (FakeExtractiveChatClient)
     ├── Agents/                     RagAgentFactory
-    ├── Cli/                        IngestionPipeline, RagPipeline, ConsoleRunner, ProviderErrors
+    ├── Cli/                        IngestionPipeline, FolderIngestion, RagPipeline, ConsoleRunner, StartupGuard, ProviderErrors, DatabaseErrors
     └── Knowledge/                  DummyKnowledgeBase (test data only)
 ```
 
@@ -189,8 +193,17 @@ $env:Rag__Provider = "Gemini"
 dotnet run
 ```
 
+**4. Run the tests (optional)**
+
+```bash
+dotnet test
+```
+
+Database tests need the Docker container from step 1 and are skipped (not failed) when the database is not reachable.
+
 **Notes**
-- The first start embeds the file and stores it. Later starts with an unchanged file print `Up to date` and make no embedding request.
+- Put your Markdown files in `VadesDev.Rag/Data/` (top level, `*.md`, unique file names). The first start embeds each new or changed file and stores it. Later starts with unchanged files print `Up to date` and make no embedding request. Rows of files that you deleted or emptied are removed.
+- If the database or the AI server is not running at startup, or the `Data/` folder is missing, the app prints one line (`! Startup failed (...)`) and ends with exit code 1.
 - Use `dotnet run`, not `dotnet watch`: the interactive input does not work well under `dotnet watch`.
 - Free Gemini tiers have small and changing quotas. On the author's project, the chat model allowed only 20 requests per day at the time of writing. Out-of-scope questions cost no chat request, because the guardrail stops them first.
 - A thinking model such as `qwen3:4b` needs roughly 20 seconds or more per answer on modest hardware.
@@ -228,14 +241,15 @@ Values are read in layers, and later layers win: `appsettings.json`, then `appse
 
 ## Known limits
 
-- One fixed knowledge file, no folder support yet (Phase 6).
+- Only `*.md` files at the top level of `Data/` are read. Other formats have no reader yet. The file name is the source key, so names must be unique.
 - The fingerprint does not notice when the model behind a name changes (for example after `ollama pull`). Use an explicit version tag in `appsettings.json`, or clear the table.
-- A file that is removed or becomes empty keeps its old rows in the database.
-- If the database is not reachable at startup, the app ends with an error from the framework (planned for Phase 6). A stopped AI server is handled per question with a readable message.
-- The chunker splits by paragraph only: no size limits and no overlap.
+- Rows are removed only for the current embedding model. Rows of other models stay until you delete them. A changed file is embedded again only when its model runs the next time, so rows of a model you do not run can be stale (for example the Gemini rows after the file was edited while using Ollama).
+- A stopped database or AI server (at startup and per question) and a missing `Data/` folder give one readable line. Configuration errors (unknown provider, missing API key or connection string) still stop the app with their own message.
+- The chunker splits by paragraph only: no size limits and no overlap. Two headings in a row are joined with each other.
 - Very short queries (one or two words) match less reliably with the local embedding model.
 - The strict system prompt makes models refuse when the chunk does not contain the complete answer, for example a question about a purchase date. An evaluation question set is on the backlog.
 - The sanitizer removes formatting noise but does **not** protect against prompt injection.
+- The automated tests cover only part of the classes (MVP). The rest is on the backlog in `SKILLS_RAG.md`.
 
 ---
 
