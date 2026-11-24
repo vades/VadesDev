@@ -44,6 +44,7 @@ Rules for the steps:
 - Before code for fast-changing APIs (Agent Framework, `Microsoft.Extensions.AI`, OpenAI SDK, OllamaSharp, pgvector libraries, FastEndpoints), check the current documentation and say what you could not verify.
 - End each step with **one** approval question and the name of the next class.
 - After each phase: a short summary (new files, flow, decisions, known limits, next phase), and update `README.md`, `DEVELOPER_GUIDE.md` and this file.
+- **Tests (from Phase 6):** one test class per message, with the empty methods and the bodies together. The user runs the tests and approves, then the next class follows. Production classes keep the five steps above.
 
 ---
 
@@ -56,13 +57,14 @@ Rules for the steps:
 - `Program.cs` is **wiring only**: create objects, connect them, start the runner. No logic, no data. Keep it at about 30 lines or less.
 - Data and settings are positional `public record`s.
 - Dependencies go through the constructor into `private readonly _camelCase` fields, as **concrete classes**.
-- Classes are `public`. Stateless classes are `static` (`TextTokenizer`, `Fnv1aHasher`, `TextSanitizer`, `DocumentChunker`, `ChunkHasher`, `AppConfiguration`, `PostgresDataSourceFactory`, `ProviderErrors`). Framework implementations are `sealed`.
+- Classes are `public`. Stateless classes are `static` (`TextTokenizer`, `Fnv1AHasher`, `TextSanitizer`, `DocumentChunker`, `ChunkHasher`, `AppConfiguration`, `PostgresDataSourceFactory`, `ProviderErrors`, `DatabaseErrors`, `StartupGuard`). Framework implementations are `sealed`.
 - **Every class and every method has an XML `<summary>`** (user decision, for IDE tooltips).
 - Use `""` instead of `string.Empty`. Use `var` for obvious types. Use collection expressions. Materialize LINQ once.
 - `Async` suffix on async methods.
 - **All SQL lives in `Storage/`**, as `const` strings with positional parameters (`$1`, `$2`, ...) and schema-qualified table names. Values always go through parameters. No ORM for the vector data.
 - **No `CancellationToken`** in the console app (Ctrl+C ends the process). Add tokens in Phase 7.
 - Settings records never contain the API key or a password.
+- **Tests** live in `VadesDev.Rag.Tests` (xUnit v3, Microsoft Testing Platform, `global.json` in the solution folder). Folders mirror the project folders, namespaces are `VadesDev.Rag.Tests.<Folder>`, classes are named `<Class>Tests`, methods `Method_Behavior`, and every class and test has an XML `<summary>`. No mocks of own types. Test doubles implement framework interfaces and live in `Fakes/` (`SpyEmbeddingGenerator`). Pass `TestContext.Current.CancellationToken` where a call accepts a token (analyzer xUnit1051). Database tests use made-up model names `test-<guid>` per test instance and skip themselves when the database is not reachable.
 
 ## Skill: vadesdev-architecture
 
@@ -74,7 +76,9 @@ Rules for the steps:
 AppConfiguration -> AiProviderFactory -> AiProvider (chat client, embedder, embedding model, MinScore)
 PostgresDataSourceFactory -> PostgresChunkStore (all SQL)
 IngestionPipeline: MarkdownFileReader -> DocumentChunker -> TextSanitizer -> ChunkHasher
-                   -> store.IsUpToDateAsync -> ChunkIndexer -> store.ReplaceChunksAsync
+                   -> store.IsUpToDateAsync -> ChunkIndexer -> store.ReplaceChunksAsync   (returns true if the file has content)
+FolderIngestion: Data/*.md (top level, sorted) -> IngestionPipeline per file -> keep list -> store.DeleteSourcesExceptAsync
+StartupGuard: EnsureSchemaAsync + IngestFolderAsync, expected failures become one line and exit code 1
 RagPipeline: embed question -> ChunkRetriever.SearchAsync -> guardrail -> GroundedPromptBuilder -> agent
 ```
 
@@ -86,6 +90,11 @@ Rules:
 - **Retriever contract:** `SearchAsync(ReadOnlyMemory<float> queryVector)` returns `Task<List<SearchHit>>` (above `MinScore`, best first, at most `TopK`). It became async in Phase 5 because it does I/O. Keep this contract stable when storage changes.
 - `ChunkIndexer.BuildIndexAsync(chunks)` only embeds and returns the list. `IngestionPipeline` hands it to the store.
 - `IngestionPipeline` and `RagPipeline` only call other classes in order, and print to the console (this changes in Phase 7).
+- **`IngestAsync` returns `true` for a file with content (stored or up to date) and `false` for a file without chunks.** `FolderIngestion` builds the keep list from the `true` files and removes the rows of every other source of the current model, after all files are done. A failure in the middle deletes nothing. A missing folder throws `DirectoryNotFoundException` before anything is deleted. An existing but empty folder removes all rows of the current model.
+- **The source key is the file name** (`Path.GetFileName`), in `MarkdownFileReader` and in `FolderIngestion`. Both must stay equal. `Data/` has no subfolders, because uploaded files will get unique names (`hashname.ext`). With a second format, the keep list must contain the files of all formats.
+- **`StartupGuard` catches only** provider errors, database errors and `DirectoryNotFoundException`. Config errors (unknown provider, missing key or connection string) are thrown before the guard with their own message. `Program.cs` returns exit code 1 when the guard returns `false`.
+- **`ConsoleRunner.TryAskAsync` catches provider and database errors** and prints a `!` line, because every question queries the database.
+- **`DatabaseErrors` is narrow:** `PostgresException` counts only for SQL states `28P01`, `28000`, `3D000` and `57P03`. A SQL mistake must still crash with a stack trace.
 - The guardrail runs **before** the LLM. No hits means no call and the answer "I don't know".
 - The prompt numbering stays `[1]`, `[2]`, ... (the fake chat client reads `[1]`), and `Question:` appears **once**, after the sources.
 - The embedder used for ingestion and for questions must be the same model, and the model name is the database key.
@@ -146,7 +155,7 @@ Rules:
 - Checked per source and per embedding model with `IsUpToDateAsync`. Equal means the embedding is skipped.
 - A changed chunker or sanitizer changes the fingerprint, so files are embedded again automatically.
 - Rows stored before the column existed have no fingerprint and are embedded once.
-- Known limits: removed or emptied files keep their rows (Phase 6), and a changed model behind the same name is not noticed.
+- Known limits: a changed model behind the same name is not noticed, and a changed file is embedded again only when its model next runs (rows of a model you do not run can be stale). Removed or emptied files lose their rows since Phase 6, for the current model only.
 
 **Entity Framework** is only for the `app` schema in Phase 8. Do not use it for `rag.chunks`.
 
@@ -156,7 +165,9 @@ Rules:
 
 **Use when:** testing a class, calibrating the search, or checking error handling.
 
-- There is **no test project yet** (candidate for Phase 6: xUnit, using the fakes, no mocks of own types). Until then, test each class with a short snippet in a temporary `Program.cs` and keep the working `Program.cs` safe. The snippets are in `DEVELOPER_GUIDE.md`, section 5.
+- **Automated tests:** `dotnet test` (or `dotnet run --project VadesDev.Rag.Tests`). Done: `TextSanitizerTests`, `DocumentChunkerTests`, `ChunkHasherTests`, `GroundedPromptBuilderTests`, `PostgresChunkStoreTests`, `FolderIngestionTests`, `IngestionPipelineTests` (the last one was written, but its run was not confirmed when this was written). Database tests need the Docker container and are skipped when it is not reachable (verified: 14 of 48 skipped, none failed). They remove their own rows. Leftovers: `DELETE FROM rag.chunks WHERE embedding_model LIKE 'test-%';`.
+- **Decision (MVP):** high test coverage is not needed now. The remaining tests are on the backlog. Classes without a test class are checked with a short snippet in a temporary `Program.cs` and the working `Program.cs` kept safe (`DEVELOPER_GUIDE.md`, section 5).
+- The parity values below were measured with the support-hours text `9 AM to 5 PM CET`. The file now says `6 PM`, so the support-hours values must be measured again.
 - Run with `dotnet run`, **not** `dotnet watch` (interactive input, and every save repeats the demo questions and burns quota).
 - Database tests use the **fake embedder** and a **made-up model name** (for example `"fake"`), so they never touch real rows. Clean up with `DELETE FROM rag.chunks WHERE embedding_model = 'fake';`.
 - **Calibration routine** for `MinScore`: real embedder, `FakeExtractiveChatClient`, `new RagSettings(MinScore: 0f, TopK: 3)`, ask in-scope questions (include paraphrases and a typo) and out-of-scope questions, write down the top-1 scores, choose the threshold in the gap (closer to the false side), then rerun with the guardrail on.
@@ -173,9 +184,11 @@ Rules:
 - Known weak spots: one or two word queries were rejected at 0.40 with `embeddinggemma`. Both models are very cautious when the chunk does not contain the complete answer, and Gemini refused the package question although the right chunk was retrieved.
 - Error checks: stop Ollama while the app waits for input (expect a `!` line and the prompt again), wrong provider name (expect the unknown-provider message), missing Gemini key (expect `ArgumentException`), missing connection string (expect the clear message).
 
-**Status at the end of Phase 5**
-- **Verified:** connection and vector round trip, mixed sizes in one column, the error without the size filter, score parity with Ollama and Gemini after the move to PostgreSQL, skipping unchanged files (second start) with both providers, 5 rows per model with fingerprints and no duplicates after repeated runs.
-- **Not checked yet:** (1) change detection (an edited `knowledge.md` is embedded again, and the table keeps 5 rows), (2) Ollama stopped at startup (app starts, `!` line at the first question), (3) database stopped at startup (expected stack trace, known gap), (4) the exception type OllamaSharp throws for a wrong model name, (5) `Data/eval-questions.md` (question, expected chunk, in scope or not) is not created yet, and it is worth adding before the next change to retrieval.
+**Status at the end of Phase 6**
+- **Verified:** connection and vector round trip, mixed sizes in one column, the error without the size filter, score parity with Ollama and Gemini after the move to PostgreSQL, skipping unchanged files (second start) with both providers, 5 rows per model with fingerprints and no duplicates after repeated runs, **change detection** (an edited `knowledge.md` is embedded again, the rows are replaced and not duplicated, and the restored file is embedded again and then skipped), and **Ollama stopped at startup** (with an unchanged file the app starts and shows a `!` line at the questions, with no stack trace).
+- **Verified in Phase 6:** a second file in `Data/` is embedded and its rows are removed after the file is deleted. Database stopped at startup, missing `Data/` folder, and a changed file with Ollama stopped each print one `! Startup failed (...)` line, with exit code 1 and without a stack trace. Real Npgsql failures (wrong password, wrong database, wrong port, container stopped) are recognized, a SQL mistake is not.
+- **Not checked yet:** (1) the exception type OllamaSharp throws for a wrong model name, (2) `Data/eval-questions.md` (question, expected chunk, in scope or not) is not created yet, and it is worth adding before the next change to retrieval (keep it outside `Data/`, because `FolderIngestion` would ingest it), (3) the Gemini rows are stale for the support-hours chunk (`5 PM` instead of `6 PM`) until the next start with Gemini embeds the file again.
+- **Known limit:** database tests take about 2 seconds each. The cause is not confirmed. One idea is `Host=localhost` trying IPv6 first, with `Host=127.0.0.1` as a check. It is only a theory until measured.
 
 ## Skill: vadesdev-phases
 
@@ -188,24 +201,32 @@ Rules:
 | 3 | Read Markdown (reader, chunker, sanitizer) | Done |
 | 4 | Real LLM and embeddings (Ollama, Gemini) | Done |
 | 5 | PostgreSQL and pgvector | Done |
-| 6 | RAG MVP as a CLI | Planned |
-| 7 | REST API with FastEndpoints | Planned |
+| 6 | RAG MVP as a CLI | Done |
+| 7 | REST API with FastEndpoints | Next |
 | 8 | Relational database with Entity Framework (users, login, chat history) | Planned |
 
-**Phase 6 (CLI MVP)**
-- Read a folder of documents and ingest file by file (the fingerprint already works per source). Remove the rows of files that were deleted or became empty.
-- Handle a startup failure (AI server or database not running) with a clear message instead of a stack trace. `IngestionPipeline` currently takes a `MarkdownFileReader`, so the second reader needs a small change.
-- Consider the first test project (xUnit, the fakes, no mocks of own types). Check Microsoft's `DataIngestion` libraries before writing more reader and chunker code.
+**Phase 6 (CLI MVP), done.** Folder ingestion (`Data/*.md`), cleanup of deleted and emptied files, readable startup errors with exit code 1, the first tests. Not done: other readers (no format needs one yet), `DataIngestion` libraries not checked, most tests (backlog).
 
-**Phase 7 (FastEndpoints)**
-- Change `RagPipeline.AskAsync` (and the ingestion output) to return results, and move printing to `ConsoleRunner`.
-- `Program.cs` becomes a web host with dependency injection of concrete classes. One endpoint class per use case. Map provider errors to HTTP status codes. Add `CancellationToken` here.
+**Phase 7 (FastEndpoints), checklist before the first endpoint**
+- **Open decision:** where the API lives. The solution already contains `VadesDev.Api` (and `Shared`, `Agent`, `Playground`) that this file has not described. Look at them first. `VadesDev.Rag` is an `Exe`, which a test project can reference, but a web host should probably not depend on another entry point.
+- Change `RagPipeline.AskAsync` to return a result (answer, hits, whether the guardrail stopped it) and move printing to `ConsoleRunner`. Same for the ingestion messages. The CLI must keep working if it stays.
+- Add `CancellationToken` to `RagPipeline`, `ChunkRetriever.SearchAsync` (keep the contract: vector in, ordered hits out), `PostgresChunkStore` and the embedder and agent calls. The signature of `AIAgent.RunAsync` with a token is **not verified**. Check the current Agent Framework documentation.
+- Register concrete classes for dependency injection (`NpgsqlDataSource`, store, `AiProvider`, retriever with model and `RagSettings`, prompt builder, agent, pipeline). Ingestion at web host startup still goes through `StartupGuard`. Whether a `ChatClientAgent` can serve concurrent requests is **not verified**.
+- A web host does not read `appsettings.Local.json` by itself. Add it as an optional layer, so the same layers apply.
+- One endpoint class per use case (first candidate: `POST /api/ask` with the question, answer and sources). Validate the request (empty or too long question).
+- Map errors to HTTP: provider 429 to 429, no connection to 503, timeout to 504, database errors to 503, validation to 400. One class owns the mapping, built on `ProviderErrors` and `DatabaseErrors`.
+- FastEndpoints: version 8.3.0 targets net10.0. Setup is `AddFastEndpoints()` and `UseFastEndpoints()`, endpoints derive from `Endpoint<TRequest, TResponse>` with `Configure()` and `HandleAsync(req, ct)`, and assemblies with certain system-like names are not scanned (`VadesDev.*` is fine). The Swagger package and its setup for version 8 are **not verified**.
+- No authentication until Phase 8. Keep the host on localhost, and think about the cost of the LLM calls (Gemini free quota is small).
 
 **Phase 8 (relational database)**
 - Entity Framework Core in the `app` schema, with `ConnectionStrings:App`. Migrations for this schema only. For login, check ASP.NET Core Identity first, and verify package versions and setup in the current documentation. No repository on top of `DbContext`.
 
 **Backlog**
-- An evaluation question set (`Data/eval-questions.md`).
+- More automated tests (MVP decision). Not covered: `ChunkRetriever`, `RagPipeline` (guardrail), `ConsoleRunner`, `ProviderErrors`, `DatabaseErrors`, `StartupGuard`, tokenizer and hasher, fake embedder and chat client, `ChunkIndexer`, `MarkdownFileReader`, configuration and provider factories. Tests that print to the console need one xUnit collection, because `Console.SetOut` is process-wide.
+- An evaluation question set (`Data/eval-questions.md`, outside `Data/`).
+- Two headings in a row are joined by the chunker (`# A` followed by `# B` becomes one chunk).
+- Check Microsoft's `DataIngestion` libraries before more reader and chunker code.
+- Database tests take about 2 seconds each (cause not confirmed).
 - The chunker has no size limit and no overlap.
 - The sanitizer does not defend against prompt injection. Bullet markers and tables are not handled.
 - Query rewriting for very short queries.
@@ -238,7 +259,12 @@ Mistakes that actually happened here:
 - Running `docker compose down -v` deletes the data and re-runs the init scripts.
 - The init script does not run on an existing volume, and a changed password in `.env` does not change the stored one.
 - The fingerprint does not notice a changed model behind the same name, and an unchanged file prints `Up to date` even then.
-- A failure during startup (database down) is outside `ConsoleRunner` and still ends with a stack trace (planned for Phase 6).
+- A stale `Fnv1aHasher` name in the docs: the class is `Fnv1AHasher` (fixed in the docs in Phase 6).
+- `Remove-Item` with a path that only works from the solution folder, while the shell was in the test folder: the template's `UnitTest1.cs` stayed and the test count was one too high.
+- xUnit1051 warnings: pass `TestContext.Current.CancellationToken` to calls that accept a token.
+- A restored file in `bin` is not copied again by `PreserveNewest` when the `bin` copy is newer. Delete the `bin` copy and build.
+- Test data of a model that changed in one place only: the Gemini rows kept the old support-hours text, because a changed file is embedded again only when its model next runs.
+- Test texts made only of stop words (`a`, `the`) give a zero vector with the fake embedder. Use words such as `alpha`.
 - An unchanged file does not embed anything at startup, so a stopped Ollama only shows up at the first question.
 
 ## Decision log
@@ -271,6 +297,16 @@ Do not reopen these without a concrete reason, and say what changed.
 | Credentials in a gitignored `.env`, connection strings in `appsettings.Local.json` | No secrets in committed files |
 | Narrow error handling with a `when` filter (`ProviderErrors`) | Only expected provider errors are caught. Real bugs still crash with a stack trace |
 | No `CancellationToken` in the console app | Ctrl+C ends the process. Tokens are added in Phase 7 |
-| Startup failure handling left for Phase 6 | Keeps `Program.cs` wiring only. Phase 6 restructures ingestion anyway |
+| Startup failure handling in `StartupGuard` (done in Phase 6) | Keeps `Program.cs` wiring only |
 | Keep the fakes | Offline tests and cheap calibration |
 | Threshold `0.40` kept although short queries are weaker | Lower values let noise through. Query rewriting is the better fix later |
+| `Data/` top level only, file name is the source key | Uploaded files get unique names (`hashname.ext`), so no subfolders and no longer key are needed |
+| `IngestAsync` returns a `bool`, `FolderIngestion` deletes | One mechanism (`DeleteSourcesExceptAsync`) for deleted and emptied files, no second delete path |
+| Cleanup after all files, only for the current model, missing folder stops first | A failed run or a wrong path never wipes the table |
+| `StartupGuard` takes a lambda and catches only expected failures | `Program.cs` has no try/catch, real bugs still show a stack trace |
+| `DatabaseErrors` accepts only four SQL states of `PostgresException` | A SQL mistake must not look like "database not reachable" |
+| `ConsoleRunner` catches database errors | Every question queries the database |
+| One xUnit v3 test project, no mocks of own types, spy implements the framework interface | Matches "no interfaces of our own" |
+| Database tests: made-up model names per test instance, skip when the database is not reachable | Real rows are never touched, parallel runs do not collide, no Docker means skipped and not failed |
+| Test workflow: one test class per message, empty methods and bodies together | User decision in Phase 6, to go faster |
+| MVP: no high test coverage for now | User decision. Focus on the API (Phase 7), remaining tests are on the backlog |
