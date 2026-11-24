@@ -7,8 +7,8 @@ How `VadesDev.Rag` works, how to test it and how to extend it. For the overview 
 ## 1. The pipeline in one picture
 
 ```
- INGESTION (once per start, IngestionPipeline.IngestAsync)
- Data/knowledge.md
+ INGESTION (once per start: FolderIngestion.IngestFolderAsync, run inside StartupGuard)
+ every Data/*.md file, one after the other (IngestionPipeline.IngestAsync):
    -> MarkdownFileReader      raw text + file name          (SourceDocument)
    -> DocumentChunker         one chunk per paragraph       (DocumentChunk[])
    -> TextSanitizer           clean each chunk's text
@@ -16,6 +16,9 @@ How `VadesDev.Rag` works, how to test it and how to extend it. For the overview 
    -> store.IsUpToDateAsync   same fingerprint stored for this model? => stop, no embedding
    -> ChunkIndexer            embed all chunks              (List<IndexedChunk>)
    -> store.ReplaceChunksAsync  replace the rows of this source, one transaction (PostgreSQL)
+ then, once, after all files:
+   -> store.DeleteSourcesExceptAsync  delete the rows of sources that are not in the keep list
+                              (keep list = files that exist and have content)
 
  ASKING (for every question, RagPipeline.AskAsync)
  question
@@ -26,7 +29,7 @@ How `VadesDev.Rag` works, how to test it and how to extend it. For the overview 
    -> agent (LLM)             answers only from the sources
 ```
 
-`Program.cs` only wires these objects together and starts `ConsoleRunner`. It contains no logic.
+`Program.cs` only wires these objects together, hands the startup work to `StartupGuard` and starts `ConsoleRunner`. It contains no logic.
 
 **Order matters.** The chunker runs *before* the sanitizer, because it needs the `#` markers to join a heading with the paragraph below it. The sanitizer then removes the symbols from each finished chunk. The fingerprint is computed from the **sanitized** chunks.
 
@@ -69,7 +72,7 @@ The connection strings (`ConnectionStrings:Rag`, `ConnectionStrings:App`) are re
 |---|---|
 | `HashingEmbeddingGenerator` | Fake `IEmbeddingGenerator`: a hashed bag of words with 4096 slots, scaled to length 1. Matches similar *words*, not similar *meaning* |
 | `TextTokenizer` (static) | Lowercase, split into words, drop stop words, strip a plural `s` |
-| `Fnv1aHasher` (static) | Stable hash, so the same word always lands in the same slot on every run |
+| `Fnv1AHasher` (static) | Stable hash, so the same word always lands in the same slot on every run |
 
 ### Search
 
@@ -84,7 +87,7 @@ The connection strings (`ConnectionStrings:Rag`, `ConnectionStrings:App`) are re
 | Class | Job |
 |---|---|
 | `PostgresDataSourceFactory` (static) | `Create(configuration)` reads `ConnectionStrings:Rag`, enables the pgvector type mapping (`UseVector()`) and returns the `NpgsqlDataSource`. Create it once and dispose it at the end of the program |
-| `PostgresChunkStore` | All SQL of the project. `EnsureSchemaAsync` creates the table, `IsUpToDateAsync` checks the fingerprint, `ReplaceChunksAsync` replaces one source in one transaction, `SearchAsync` returns the nearest chunks with similarity = 1 - cosine distance. It applies no `MinScore` |
+| `PostgresChunkStore` | All SQL of the project. `EnsureSchemaAsync` creates the table, `IsUpToDateAsync` checks the fingerprint, `ReplaceChunksAsync` replaces one source in one transaction, `DeleteSourcesExceptAsync` deletes the rows of all sources of one model that are not in a given list (an empty list deletes all rows of the model) and returns the number of rows, `SearchAsync` returns the nearest chunks with similarity = 1 - cosine distance. It applies no `MinScore` |
 
 The table `rag.chunks`:
 
@@ -119,10 +122,13 @@ There is no index, so the search is an exact scan and gives the same scores as a
 
 | Class | Job |
 |---|---|
-| `IngestionPipeline` | `IngestAsync(path)` takes one file to the database: read, chunk, sanitize, fingerprint, then skip (unchanged) or embed and store. A file without chunks is skipped with a message |
+| `IngestionPipeline` | `IngestAsync(path)` takes one file to the database: read, chunk, sanitize, fingerprint, then skip (unchanged) or embed and store. Returns `true` if the file has content (stored or already up to date) and `false` if it has no chunks (skipped with a message) |
+| `FolderIngestion` | `IngestFolderAsync(folder)` ingests every `*.md` file at the top level of the folder (sorted by name), builds the keep list from the files that returned `true`, then removes the rows of all other sources of the current model. Throws `DirectoryNotFoundException` for a missing folder before anything is deleted. The source key is the file name, built the same way as in `MarkdownFileReader` |
+| `StartupGuard` (static) | `RunAsync(startup)` runs the startup work. Expected failures (AI server, database, missing knowledge folder) print one line `! Startup failed (<area>): ...` and return `false`. Everything else is not caught |
 | `RagPipeline` | `AskAsync(question)` runs one full round trip and prints the hits and the answer |
-| `ConsoleRunner` | Runs the demo questions, then an interactive loop until an empty line. Catches provider errors per question |
+| `ConsoleRunner` | Runs the demo questions, then an interactive loop until an empty line. Catches provider errors and database errors per question and prints a `!` line |
 | `ProviderErrors` (static) | `IsProviderError` recognizes HTTP errors, no connection and timeouts. `Describe` returns one readable line |
+| `DatabaseErrors` (static) | `IsDatabaseError` recognizes connection-level problems: no connection (`NpgsqlException`, `SocketException`) and a `PostgresException` with one of four SQL states (wrong login `28P01` and `28000`, unknown database `3D000`, server starting up `57P03`). SQL mistakes are not recognized on purpose. `Describe` returns one readable line without the connection string |
 
 `Knowledge/DummyKnowledgeBase` returns five hardcoded chunks. It is only used as test data now.
 
@@ -131,8 +137,10 @@ There is no index, so the search is an exact scan and gives the same scores as a
 ```
 AppConfiguration.Build()
   -> AiProviderFactory.Create()          -> AiProvider (chat client, embedder, embedding model, MinScore)
-  -> PostgresDataSourceFactory.Create()  -> PostgresChunkStore -> EnsureSchemaAsync()
-  -> IngestionPipeline(MarkdownFileReader, ChunkIndexer(embedder), store, model).IngestAsync(path)
+  -> PostgresDataSourceFactory.Create()  -> PostgresChunkStore
+  -> IngestionPipeline(MarkdownFileReader, ChunkIndexer(embedder), store, model)
+  -> FolderIngestion(pipeline, store, model)
+  -> StartupGuard.RunAsync(EnsureSchemaAsync + IngestFolderAsync(Data folder))   false => exit code 1
   -> ChunkRetriever(store, model, new RagSettings(provider.MinScore))
   -> RagAgentFactory.Create(provider.ChatClient)
   -> RagPipeline(...) -> ConsoleRunner(...).RunAsync()
@@ -251,13 +259,42 @@ Remove-Item Env:Rag__Provider           # remove it again
 - If a secret file is already staged, run `git restore --staged <file>`. If it is tracked, `git rm --cached <file>`. If a secret was ever committed or pushed, treat it as leaked and replace it.
 - Settings records never contain the key or the password, so printing them is safe.
 
-**Files copied to the output folder** (in the `.csproj`): `Data/knowledge.md`, `appsettings.json`, `appsettings.Local.json`. If a file is not found at run time, check `bin/Debug/net10.0/` first.
+**Files copied to the output folder** (in the `.csproj`): `Data/*.md`, `appsettings.json`, `appsettings.Local.json`. If a file is not found at run time, check `bin/Debug/net10.0/` first.
 
 ---
 
 ## 5. Testing
 
-There is no test project yet (a first xUnit project is a candidate for Phase 6). Until then, each class is tested with a short snippet in a temporary `Program.cs`. Keep your working `Program.cs` somewhere safe while you do this. Tests with the database need the Docker container to be running, and they use a **made-up model name** (for example `"fake"`), so they never touch the rows of a real model. Clean up afterwards with `DELETE FROM rag.chunks WHERE embedding_model = 'fake';`.
+Automated tests live in the project `VadesDev.Rag.Tests` (section 5.0). Classes without a test class are still checked with a short snippet in a temporary `Program.cs` (sections 5.1 and 5.2). Keep your working `Program.cs` somewhere safe while you do this. Manual snippets with the database need the Docker container to be running, and they use a **made-up model name** (for example `"fake"`), so they never touch the rows of a real model. Clean up afterwards with `DELETE FROM rag.chunks WHERE embedding_model = 'fake';`.
+
+### 5.0 Automated tests (`VadesDev.Rag.Tests`)
+
+xUnit v3 (`xunit.v3.mtp-v2`) on the Microsoft Testing Platform. The file `global.json` in the solution folder sets the runner for `dotnet test`.
+
+```powershell
+dotnet test                                   # solution folder or test project folder
+dotnet run --project VadesDev.Rag.Tests       # the xUnit runner itself
+```
+
+| Test class | Tests | Needs the database |
+|---|---|---|
+| `TextSanitizerTests` | one test per cleaning rule, line endings, empty input | no |
+| `DocumentChunkerTests` | paragraphs, heading joining, ids, `\r\n`, blank lines | no |
+| `ChunkHasherTests` | stable, sensitive to text, id and order, format, NUL separator | no |
+| `GroundedPromptBuilderTests` | header, numbering, `Question:` once, no scores | no |
+| `PostgresChunkStoreTests` | fingerprint check, replace, search, vector sizes, delete | yes |
+| `FolderIngestionTests` | folder scan, replace, cleanup of deleted or empty files, missing folder | yes |
+| `IngestionPipelineTests` | stored text, skip when unchanged (counted with a spy), failure keeps old rows | yes |
+
+How they are built:
+- The folders mirror the project folders. Namespaces are `VadesDev.Rag.Tests.<Folder>`, test classes are named `<Class>Tests`, and test methods `Method_Behavior`. Every class and test has an XML `<summary>`.
+- No mocks of our own types. The test double `Fakes/SpyEmbeddingGenerator` implements the framework interface, wraps the fake embedder, counts the calls and can be told to fail.
+- **Database tests use their own made-up model names** (`test-<guid>`, one per test instance), so they never touch real rows and cannot collide when they run in parallel. They remove their rows afterwards. If a run crashed, remove leftovers with `DELETE FROM rag.chunks WHERE embedding_model LIKE 'test-%';`.
+- **If the database is not reachable, the database tests are skipped, not failed** (checked: with the container stopped, 14 of 48 tests were skipped). The message names the cause.
+- They read the connection string from `appsettings.Local.json` through `AppConfiguration.Build()`. The settings files are copied into the test output from the main project.
+- Database tests take about 2 seconds each. The cause is not confirmed (see the backlog).
+
+Not covered yet (MVP, see the backlog in `SKILLS_RAG.md`): `ChunkRetriever`, `RagPipeline` (guardrail), `ConsoleRunner`, `ProviderErrors`, `DatabaseErrors`, `StartupGuard`, the tokenizer and hasher, the fake embedder and chat client, `ChunkIndexer`, `MarkdownFileReader`, the configuration and provider factories.
 
 ### 5.1 Quick checks per class (no network, no database)
 
@@ -266,9 +303,9 @@ There is no test project yet (a first xUnit project is a candidate for Phase 6).
 Console.WriteLine(string.Join(", ", TextTokenizer.Tokenize("What are your support hours?")));
 // support, hour
 
-// Fnv1aHasher: stable on every run
-Console.WriteLine(Fnv1aHasher.Hash(""));    // 2166136261
-Console.WriteLine(Fnv1aHasher.Hash("a"));   // 3826002220
+// Fnv1AHasher: stable on every run
+Console.WriteLine(Fnv1AHasher.Hash(""));    // 2166136261
+Console.WriteLine(Fnv1AHasher.Hash("a"));   // 3826002220
 
 // TextSanitizer
 Console.WriteLine(TextSanitizer.Sanitize("# Support\nCall **us** at `9 AM`, see issue #5."));
@@ -384,7 +421,7 @@ Results from this project (5 chunks, `knowledge.md`):
 | Strongest false top-1 | 0.554 | 0.305 |
 | **MinScore chosen** | **0.60** | **0.40** |
 
-Recalibrate when the knowledge base grows or the embedding model changes. The small samples here are a starting point, not proof. The questions and the measured scores live in `Data/eval-questions.md`: re-run that set after every change to the chunker, the sanitizer, the embedding model, `MinScore`, the prompt or the storage, and compare retrieval (right chunk?) separately from generation (right answer?).
+Recalibrate when the knowledge base grows or the embedding model changes. The small samples here are a starting point, not proof.
 
 ### 5.4 Parity check: database versus in-memory
 
@@ -415,7 +452,7 @@ Repeat this check after any change to the SQL, the chunker, the sanitizer or the
 - **Unknown provider:** `$env:Rag__Provider = "Foo"` stops with a message that lists the valid names.
 - **Missing connection string:** an empty `ConnectionStrings:Rag` stops with a message that names both ways to set it.
 
-### 5.7 Status of the checks (end of Phase 5)
+### 5.7 Status of the checks (end of Phase 6)
 
 | Check | Status |
 |---|---|
@@ -426,7 +463,13 @@ Repeat this check after any change to the SQL, the chunker, the sanitizer or the
 | Table: 5 rows per model, no duplicates after repeated runs, fingerprints stored | Verified |
 | **Change detection:** an edited `knowledge.md` is embedded again, the old rows are replaced (still 5 per model), and the restored file is embedded again, then skipped | Verified |
 | **Ollama stopped at startup:** with an unchanged file the app starts and shows a `!` line at the questions, with no stack trace | Verified |
-| **Database stopped at startup:** expected to end with a stack trace (known gap) | Not checked yet |
+| **Database stopped at startup:** one line `! Startup failed (database): ...` and exit code 1, no stack trace | Verified |
+| **Knowledge folder missing:** one line `! Startup failed (knowledge folder): ...`, exit code 1, no rows deleted | Verified |
+| **File changed and Ollama stopped at startup:** `Indexing ...` then `! Startup failed (AI server): ...`, exit code 1 | Verified |
+| **A second file in `Data/`:** embedded at the next start, and its rows are removed after the file is deleted | Verified |
+| Real failures of Npgsql (wrong password, wrong database, wrong port, container stopped) are recognized, a SQL mistake is not | Verified |
+| Automated tests: sanitizer, chunker, hasher, prompt builder, store and folder ingestion | Verified |
+| Automated tests: `IngestionPipelineTests` | Run `dotnet test` to confirm |
 | Exception type of OllamaSharp for a wrong model name | Not checked yet |
 
 ---
@@ -450,6 +493,15 @@ Repeat this check after any change to the SQL, the chunker, the sanitizer or the
 - **Narrow error handling.** Only provider errors are caught (`when` filter), so real bugs still crash with a stack trace.
 - **Reasoning stays out of the answer.** `qwen3:4b` returns its thinking as a separate `TextReasoningContent`. `response.Text` contains only the answer. Do not send `think=false` to this model: it then writes the reasoning into the answer text.
 - **Prompt numbering must stay `[1]`, `[2]`, ...** The fake chat client looks for the `[1]` line.
+- **Top-level files only in `Data/`, the file name is the source key.** Every uploaded file will get a unique name (`hashname.ext`), so subfolders and a longer key are not needed. One folder serves all formats.
+- **`IngestAsync` returns a `bool`**, and `FolderIngestion` does the removal. An emptied file is simply left out of the keep list, so one mechanism (`DeleteSourcesExceptAsync`) handles deleted and emptied files.
+- **The cleanup runs after all files are ingested.** If one file fails, nothing is deleted. A missing folder stops before anything is deleted, and an existing but empty folder removes all rows of the current model.
+- **Only the current embedding model's rows are touched.** Rows of other models stay.
+- **`StartupGuard` takes the startup work as a lambda**, so `Program.cs` has no `try/catch`. It catches provider errors, database errors and the missing folder, and nothing else. Configuration errors are thrown while the objects are created, before the guard, with their own clear messages.
+- **`DatabaseErrors` is narrow.** A `PostgresException` counts only for four connection-level SQL states, so a SQL mistake still crashes with a stack trace. Other `NpgsqlException` types and `SocketException` count as "cannot reach the database".
+- **`ConsoleRunner` catches database errors too**, because every question queries the database.
+- **Tests: xUnit v3, one project, no mocks of own types.** Database tests use made-up model names per test instance and are skipped when the database is not reachable.
+- **Test workflow:** one test class per step, with the empty methods and the bodies in one message.
 
 ---
 
@@ -474,7 +526,8 @@ Change `EmbeddingModel` in `appsettings.json`. The new name is a different key, 
 1. Add a reader class next to `MarkdownFileReader` with the same shape: `ReadAsync(path)` returns a `SourceDocument`.
 2. Do format-specific work inside the reader (extract PDF text, strip HTML tags).
 3. Give the reader to `IngestionPipeline` (today it takes a `MarkdownFileReader`, so this needs a small change when the second reader arrives). The chunker, sanitizer, fingerprint and store stay unchanged.
-4. Add a sample file and check the chunk output (section 5.1).
+4. `FolderIngestion` has one constant `FilePattern` (`*.md`). With a second format it needs a list of patterns and a way to choose the reader per file. **The keep list must contain the files of all formats**, otherwise a run deletes the rows of the other formats.
+5. Add a sample file and check the chunk output (section 5.1).
 
 ### Change the chunking or the sanitizer
 
@@ -528,7 +581,8 @@ Only needed when the data grows. Check the current pgvector documentation first.
 | `ConnectionStrings:Rag is missing` | Set it in `appsettings.Local.json` or `ConnectionStrings__Rag` |
 | HTTP 429 from Gemini | Per-minute or per-day quota used up. Check the usage page in Google AI Studio, wait, or use another model. The daily quota resets around midnight Pacific time |
 | `HttpClient.Timeout of 100 seconds` | A client without our longer timeout. The Ollama factory sets 5 minutes. A cold model start can still be slow |
-| `HttpRequestException` at startup | The AI server is not running (for Ollama, start it). With an unchanged file no embedding is needed at startup, so the error then appears at the first question as a `!` line |
+| `! Startup failed (AI server): ...` | The AI server is not running (for Ollama, start it). This appears at startup only when a file needs embedding. With unchanged files no embedding is needed, so the error then appears at the first question as a `!` line |
+| `! Startup failed (knowledge folder): ...` | The `Data/` folder is missing in `bin/Debug/net10.0/`. Check the `Data\*.md` entry in the `.csproj` and that `Data/` has at least one `.md` file |
 | Everything is rejected after switching embedding model | `MinScore` is calibrated for another model. Recalibrate (section 5.3) |
 | Fake answer shows only a heading | Limit of `FakeExtractiveChatClient`: it returns the first line of the first source. The retrieval itself is correct |
 | Slow answers with Ollama | Thinking model plus a CPU/GPU split. `ollama ps` shows where the model runs. A smaller or non-thinking model is a configuration change |
@@ -542,7 +596,10 @@ Only needed when the data grows. Check the current pgvector documentation first.
 | `Set POSTGRES_PASSWORD in the .env file` | `.env` is missing or not in the same folder as the compose file |
 | No extension `vector`, no schemas `app` / `rag` | The data volume already existed, so the init script did not run. `docker compose down -v`, then `docker compose up -d` (this deletes the data) |
 | Password changed in `.env` has no effect | The password is stored in the volume at first start. Reset the volume, or run `ALTER USER` |
-| Stack trace at `EnsureSchemaAsync` or `Npgsql` connection errors at startup | The database is not running or not healthy (`docker compose ps`), or the connection string is wrong. This case is not handled with a friendly message yet |
+| `! Startup failed (database): ...` (or a `!` line at a question) | The database is not running or not healthy (`docker compose ps`), the login or database name is wrong, or Docker Desktop is not running. The message tells which. A SQL mistake is not caught on purpose and shows a stack trace |
+| Database tests are reported as skipped | The database is not reachable. Start the container (`docker compose up -d`) and wait for `healthy` |
+| `test-...` rows in `rag.chunks` | A test run crashed before its cleanup. `DELETE FROM rag.chunks WHERE embedding_model LIKE 'test-%';` |
+| One test more than expected in `dotnet test` | The template's sample `UnitTest1.cs` is still in the test project. Delete it |
 | `different vector dimensions 5 and 3` | A query compared vectors of different sizes. Every search must filter by `embedding_model` and `vector_dims(embedding)`, as `SearchAsync` does |
 | Container `unhealthy` | Read `docker compose logs postgres` |
 | `.env` appears in `git status` | It was staged or tracked before the `.gitignore` rule existed. `git restore --staged .env` (or `git rm --cached .env`) |
@@ -555,7 +612,7 @@ Useful Ollama commands: `ollama list`, `ollama ps`, `ollama stop <model>` (unloa
 
 ## 10. What comes next
 
-- **Phase 6, CLI MVP.** Read a folder of documents, ingest file by file (the fingerprint already works per source), remove rows of files that were deleted or became empty, handle a startup failure (AI server or database not running) with a clear message, consider the first test project, and check Microsoft's `DataIngestion` libraries before writing more reader and chunker code.
-- **Phase 7, FastEndpoints.** `RagPipeline.AskAsync` should return the answer and hits instead of printing, so the CLI and the API can share it. Provider errors map to HTTP status codes. Add `CancellationToken`.
+- **Phase 6 is done** (MVP): folder ingestion, cleanup of deleted and emptied files, readable startup errors with exit code 1, and the first test project. More tests (section 5.0, "Not covered yet") will follow in the backlog.
+- **Phase 7, FastEndpoints.** Before the first endpoint: `RagPipeline.AskAsync` returns the answer and the hits instead of printing (the CLI prints them in `ConsoleRunner`), the ingestion reports what it did instead of printing, `CancellationToken` goes through the pipeline, the objects are registered for dependency injection (concrete classes), and provider and database errors map to HTTP status codes. One endpoint class per use case. See `SKILLS_RAG.md` for the checklist.
 - **Phase 8, relational database.** Entity Framework Core in the `app` schema of the same database (users, login, chat history), with `ConnectionStrings:App`. For login, check ASP.NET Core Identity first.
-- **Backlog.** Query rewriting for short queries, a chunk size limit and overlap, an explicit embedding model version tag, and a small evaluation runner that reads `Data/eval-questions.md` (today the set is run by hand).
+- **Backlog.** More automated tests, an evaluation question set (`Data/eval-questions.md`, kept outside `Data/` because `FolderIngestion` would ingest it), query rewriting for short queries, a chunk size limit and overlap, two headings in a row are joined by the chunker, an explicit embedding model version tag, a check of Microsoft's `DataIngestion` libraries before more reader and chunker code, and the slow connection of the database tests (about 2 seconds each, cause not confirmed).
